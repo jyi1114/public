@@ -188,17 +188,21 @@ function viewHistory() {
   const months = monthsOf(), cur = todayISO().slice(0, 7);
   if (!months.includes(cur)) months.unshift(cur);
   if (!state.hMonth) state.hMonth = cur;
+  view().innerHTML = `<div class="card"><div class="row2"><select id="hMonth">${months.map(m => `<option value="${m}" ${m === state.hMonth ? 'selected' : ''}>${m}</option>`).join('')}</select>
+    <input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}"></div></div>
+    <div id="hBody"></div>`;
+  $('#hMonth').onchange = e => { state.hMonth = e.target.value; renderHistoryBody(); };
+  $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; renderHistoryBody(); });
+  renderHistoryBody();
+}
+function renderHistoryBody() {
   const q = state.hQuery.trim().toLowerCase();
   const list = state.tx.filter(t => t._m === state.hMonth && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
   let body = '', last = '';
   list.forEach(t => { if (t.tx_date !== last) { last = t.tx_date; const day = list.filter(x => x.tx_date === last && isSpend(x)).reduce((s, x) => s + x.amount, 0); body += `<div class="dayh"><span>${mmdd(last)} (${wdOf(last)})</span><span>${day ? won(day) : ''}</span></div>`; } body += rowHtml(t); });
-  view().innerHTML = `<div class="card"><div class="row2"><select id="hMonth">${months.map(m => `<option value="${m}" ${m === state.hMonth ? 'selected' : ''}>${m}</option>`).join('')}</select>
-    <input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}"></div>
-    <div class="sum"><div>지출<b>${won(exp)}</b></div><div>수입<b class="pos">${won(inc)}</b></div><div>건수<b>${list.length}건</b></div></div></div>
+  $('#hBody').innerHTML = `<div class="card"><div class="sum"><div>지출<b>${won(exp)}</b></div><div>수입<b class="pos">${won(inc)}</b></div><div>건수<b>${list.length}건</b></div></div></div>
     <div class="card">${body || '<div class="note">내역이 없습니다.</div>'}</div>`;
-  $('#hMonth').onchange = e => { state.hMonth = e.target.value; viewHistory(); };
-  $('#hQuery').oninput = e => { state.hQuery = e.target.value; const pos = e.target.selectionStart; viewHistory(); const el = $('#hQuery'); el.focus(); el.setSelectionRange(pos, pos); };
 }
 
 function meter(label, value, limit, right) {
