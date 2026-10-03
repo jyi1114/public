@@ -27,15 +27,16 @@ const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/�
 const INCOME_CATS = ['급여', '상여', '부수입', '이자/배당', '환급', '기타수입'];
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
-const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hMonth: null, hQuery: '', aMonth: null, form: null };
+const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hMonth: null, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
 
 // ---------- backend ----------
 function makeMock() {
-  const mem = { tx: [], rules: [], settings: null };
+  const mem = { tx: [], rules: [], settings: null, asset: null };
   return {
     async getSession() { return { user: { id: 'demo', email: '미리보기' } }; },
     onAuth() {}, async signIn() {}, async signOut() {},
-    async loadAll() { return { tx: mem.tx.map(t => ({ ...t })), rules: mem.rules.map(r => ({ ...r })), settings: mem.settings }; },
+    async loadAll() { return { tx: mem.tx.map(t => ({ ...t })), rules: mem.rules.map(r => ({ ...r })), settings: mem.settings, asset: mem.asset, assetErr: '' }; },
+    async saveAsset({ file_name, sheets }) { mem.asset = { file_name, sheets, uploaded_at: new Date().toISOString() }; return mem.asset; },
     async addTx(r) { const t = { ...r, id: crypto.randomUUID(), created_at: new Date().toISOString() }; mem.tx.push(t); return { ...t }; },
     async updateTx(id, r) { const i = mem.tx.findIndex(t => t.id === id); mem.tx[i] = { ...mem.tx[i], ...r }; return { ...mem.tx[i] }; },
     async deleteTx(id) { mem.tx = mem.tx.filter(t => t.id !== id); },
@@ -64,8 +65,14 @@ function makeSupabase() {
       }
       const rules = ck(await sb.from('rules').select('key,nature'));
       const s = ck(await sb.from('settings').select('data').maybeSingle());
-      return { tx, rules, settings: s ? s.data : null };
+      let asset = null, assetErr = '';
+      try {
+        const a = await sb.from('asset_snapshots').select('file_name,uploaded_at,sheets').order('uploaded_at', { ascending: false }).limit(1).maybeSingle();
+        if (a.error) assetErr = a.error.message; else asset = a.data || null;
+      } catch (e) { assetErr = String((e && e.message) || e); }
+      return { tx, rules, settings: s ? s.data : null, asset, assetErr };
     },
+    async saveAsset({ file_name, sheets }) { return ck(await sb.from('asset_snapshots').insert({ user_id: uid(), file_name, sheets }).select('file_name,uploaded_at,sheets').single()); },
     async addTx(r) { return ck(await sb.from('transactions').insert({ ...r, user_id: uid() }).select().single()); },
     async updateTx(id, r) { return ck(await sb.from('transactions').update(r).eq('id', id).select().single()); },
     async deleteTx(id) { ck(await sb.from('transactions').delete().eq('id', id)); },
@@ -312,9 +319,196 @@ function viewSettings() {
   view().querySelectorAll('[data-rule]').forEach(s => s.onchange = async () => { await run(async () => { await backend.setRules([{ key: s.dataset.rule, nature: s.value }]); state.rules[s.dataset.rule] = s.value; prep(); toast('규칙 변경됨'); }); });
 }
 
+// ---------- 자산 탭 (자산관리시트 스냅샷) ----------
+const aS = (sheet, addr) => (state.asset && state.asset.sheets && state.asset.sheets[sheet]) ? state.asset.sheets[sheet][addr] : undefined;
+const aNum = v => typeof v === 'number' ? v : null;
+const aPct = (v, d = 1) => v == null ? '-' : (v * 100).toFixed(d) + '%';
+const aSgn = v => v > 0 ? '+' : '';
+const aToDate = n => new Date(Date.UTC(1899, 11, 30) + n * 86400000);
+const aYmd = n => { const d = aToDate(n); return `${d.getUTCFullYear()}.${p2(d.getUTCMonth() + 1)}.${p2(d.getUTCDate())}`; };
+const aStatusCls = t => { t = String(t || ''); if (/⚠|미달|이탈|초과|부족|우선/.test(t)) return 'warn'; if (/정상|충족|양호/.test(t)) return 'ok'; return 'na'; };
+const aTag = t => t ? `<span class="tag ${aStatusCls(t)}">${esc(t)}</span>` : '';
+function assetLatestLabel(asset) {
+  const sh = asset && asset.sheets && asset.sheets['월별기록']; let mx = null;
+  if (sh) for (let r = 5; r <= 80; r++) { const v = sh['A' + r]; if (typeof v === 'number' && (mx == null || v > mx)) mx = v; }
+  return mx == null ? '-' : aYmd(mx);
+}
+function aMonths() {
+  const rows = [];
+  for (let r = 5; r <= 80; r++) {
+    const a = aNum(aS('월별기록', 'A' + r));
+    if (a == null) break;
+    const g = c => aNum(aS('월별기록', c + r));
+    rows.push({ r, date: a, doyak: g('B'), cheongyak: g('C'), pension: g('D'), cash: g('E'), deposit: g('F'), debt: g('G'),
+      core: g('H'), lead: g('I'), indiv: g('J'), bond: g('K'), infl: g('L'), bucket: g('M'), total: g('N'),
+      inflow: g('S'), gain: g('T'), pnl: g('U'), cumIn: g('V'), cumPnl: g('W'), cumRet: g('X'), risk: g('AA') });
+  }
+  return rows;
+}
+function aLineChart(pts, fmt) {
+  const W = 420, H = 150, pl = 8, pr = 8, pt = 22, pb = 24;
+  if (!pts.length) return '';
+  const ys = pts.map(p => p.y), min = Math.min(...ys), max = Math.max(...ys);
+  const span = (max - min) || Math.abs(max) * 0.1 || 1;
+  const lo = min - span * 0.25, hi = max + span * 0.25;
+  const x = i => pts.length === 1 ? W / 2 : pl + (W - pl - pr) * i / (pts.length - 1);
+  const y = v => pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo));
+  const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.y).toFixed(1)}`).join(' ');
+  const dots = pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.y)}" r="3.5" fill="var(--accent)"/>
+    <text x="${x(i)}" y="${y(p.y) - 8}" text-anchor="middle" style="fill:var(--text)">${fmt(p.y)}</text>
+    <text x="${x(i)}" y="${H - 6}" text-anchor="middle">${esc(p.x)}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/>${dots}</svg>`;
+}
+function aNext21() {
+  const now = new Date(); let d = new Date(now.getFullYear(), now.getMonth(), 21);
+  if (now.getDate() > 21) d = new Date(now.getFullYear(), now.getMonth() + 1, 21);
+  return { date: d, days: Math.ceil((d - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000) };
+}
+function aMonthStats() {
+  const B = {};
+  state.tx.filter(isSpend).forEach(t => { const m = B[t._m] ??= { total: 0, n: 0, first: t.tx_date }; m.total += t.amount; m.n++; if (t.tx_date < m.first) m.first = t.tx_date; });
+  return B;
+}
+// 이번 달 지출 카드 (가계부 기록 기준)
+function assetSpendCard() {
+  const cur = todayISO().slice(0, 7), B = aMonthStats(), c = B[cur] || { total: 0, n: 0 }, S = state.settings, today = todayISO();
+  const last = state.tx.filter(t => t.tx_date <= today).reduce((m, t) => t.tx_date > m ? t.tx_date : m, '0000-00-00');
+  return `<div class="card"><h2>이번 달 지출 <small>가계부 · 마지막 기록 ${last === '0000-00-00' ? '없음' : last.replace(/-/g, '.')}</small></h2>
+    ${meter(`${cur.replace('-', '.')} 지출 (카드대금·저축 제외)`, c.total, S.monthLimit, `<b>${won(c.total)}</b> / ${won(S.monthLimit)} · ${c.n}건`)}</div>`;
+}
+// 사다리 3단계 조건 중 '지출 6개월 실측 목표 이내'를 가계부 기록으로 계산
+function assetLadderCond() {
+  const B = aMonthStats(), S = state.settings, keys = Object.keys(B).sort(), cur = todayISO().slice(0, 7);
+  const complete = keys.filter(k => k < cur && !(k === keys[0] && +B[k].first.slice(8) > 9));
+  const last6 = complete.slice(-6), ok = last6.filter(k => B[k].total <= S.monthLimit).length;
+  const avg = last6.length ? last6.reduce((s, k) => s + B[k].total, 0) / last6.length : 0;
+  return `<div class="cond"><b>3단계 조건(지출 6개월 실측)</b> — 한도 ${won(S.monthLimit)} 이내 ${ok}/6개월${last6.length ? ` · 최근 ${last6.length}개월 평균 ${won(avg)}` : ' · 아직 완성된 달이 없음'}
+    <div class="prog"><span style="width:${(ok / 6 * 100).toFixed(0)}%"></span></div>
+    <div class="note" style="margin:4px 0 0">${last6.map(k => `${k.slice(2)} ${(B[k].total / 10000).toFixed(0)}만 ${B[k].total <= S.monthLimit ? '○' : '✕'}`).join(' · ')}</div></div>`;
+}
+
+function viewAsset() {
+  if (!state.asset) {
+    view().innerHTML = `<div class="card"><h2>자산</h2><div class="note" style="margin:0">아직 자산관리시트를 올리지 않았습니다. 입력 탭 → '엑셀 올리기'에서 자산관리시트_YYMMDD.xlsx를 올리세요.</div></div>
+      ${state.assetErr ? `<div class="banner warn">자산 데이터를 불러오지 못했습니다: ${esc(state.assetErr)} (Supabase에 asset_snapshots 표가 있는지 확인하세요)</div>` : ''}`;
+    return;
+  }
+  const M = aMonths();
+  if (!M.length) { view().innerHTML = '<div class="card neg">월별기록에서 데이터를 찾지 못했습니다.</div>'; return; }
+  const L = M[M.length - 1], P = M.length > 1 ? M[M.length - 2] : null;
+  const n21 = aNext21();
+  const up = state.asset.uploaded_at ? new Date(state.asset.uploaded_at) : null;
+  const upTxt = up && !isNaN(up) ? `${up.getFullYear()}.${p2(up.getMonth() + 1)}.${p2(up.getDate())} ${p2(up.getHours())}:${p2(up.getMinutes())}` : '-';
+  let h = `<div class="note" style="margin:0 0 10px">기준: ${aYmd(L.date)} 월별기록 · 파일 ${esc(state.asset.file_name || '-')} · 업로드 ${upTxt}</div>`;
+
+  // ---- banner: 21일 리마인더 / 기록 지연 ----
+  const daysSince = Math.floor((Date.now() - aToDate(L.date).getTime()) / 86400000);
+  h += daysSince > 35
+    ? `<div class="banner warn">마지막 기록이 ${daysSince}일 전입니다. 매월 21일 루틴(시트 갱신)을 확인하세요. 다음 21일: ${n21.date.getMonth() + 1}월 21일 (D-${n21.days})</div>`
+    : `<div class="banner ok">기록은 최신입니다. 다음 21일 루틴: ${n21.date.getMonth() + 1}월 21일 (D-${n21.days})</div>`;
+
+  // ---- hero ----
+  h += `<div class="card hero"><div style="color:var(--sub);font-size:13px">순자산 (${aYmd(L.date)})</div>
+    <div class="big">${won(L.total)}</div>
+    <div class="row">
+      ${P ? `<div>전월 대비 자산 증가<b class="${L.gain >= 0 ? 'pos' : 'neg'}">${aSgn(L.gain)}${won(L.gain)}</b></div>
+      <div>├ 저축 유입 (내가 넣은 돈)<b>${won(L.inflow)}</b></div>
+      <div>└ 운용손익 (시장이 준 돈)<b class="${L.pnl >= 0 ? 'pos' : 'neg'}">${aSgn(L.pnl)}${won(L.pnl)}</b></div>` : ''}
+      <div>투자 버킷 누적 수익률<b class="${(L.cumRet || 0) >= 0 ? 'pos' : 'neg'}">${aSgn(L.cumRet)}${aPct(L.cumRet)}</b></div>
+      <div>누적 손익<b class="${(L.cumPnl || 0) >= 0 ? 'pos' : 'neg'}">${aSgn(L.cumPnl)}${won(L.cumPnl)}</b></div>
+    </div></div>`;
+
+  h += assetSpendCard();
+
+  // ---- alerts ----
+  const alertRows = [
+    [60, '마이너스통장 잔액 (최우선)', 'won'], [61, '즉시 가용 현금', 'won'], [62, '현금 완충 (경성 제약)', 'won'],
+    [63, '액티브 비중', 'pct'], [64, '코어 비중 (액티브 이상이어야 함)', 'pct'], [65, '위험자산 비중 (규칙 1 ⑥·⑦)', 'pct']
+  ];
+  const ar = alertRows.map(([r, label, kind]) => {
+    const cur = aNum(aS('대시보드', 'C' + r)), st = aS('대시보드', 'D' + r);
+    return `<tr><td>${label}</td><td>${esc(aS('대시보드', 'B' + r))}</td><td><b>${kind === 'won' ? won(cur) : aPct(cur)}</b></td><td>${aTag(st)}</td></tr>`;
+  }).join('');
+  const warns = alertRows.filter(([r]) => aStatusCls(aS('대시보드', 'D' + r)) === 'warn').length;
+  h += `<div class="card"><h2>경보 점검 <small>${warns ? warns + '건 확인 필요' : '모두 정상'}</small></h2>
+    <table><tr><th>항목</th><th>기준</th><th>현재</th><th>상태</th></tr>${ar}</table>
+    ${P && L.risk != null && P.risk != null ? `<div class="note" style="margin-top:10px">위험자산 비중 추이: ${aPct(P.risk)} → ${aPct(L.risk)} ${L.risk < P.risk ? '(개선 중 — 매도 없이 유입으로 조정)' : L.risk > P.risk ? '(악화)' : '(변화 없음)'}</div>` : ''}</div>`;
+
+  // ---- asset composition ----
+  const comp = [
+    ['청년도약계좌', L.doyak, 'var(--c1)'], ['주택청약저축', L.cheongyak, 'var(--c2)'], ['연금저축', L.pension, 'var(--c3)'],
+    ['현금성(생활)', L.cash, 'var(--c4)'], ['증권 예수금', L.deposit, 'var(--c5)'], ['투자 버킷', L.bucket, 'var(--c6)']
+  ];
+  const gross = comp.reduce((s, c) => s + (c[1] || 0), 0);
+  h += `<div class="card"><h2>자산 구성 <small>총자산 ${won(gross)} − 부채 ${won(Math.abs(L.debt || 0))}</small></h2>
+    <div class="stack">${comp.map(c => `<span style="width:${((c[1] || 0) / gross * 100).toFixed(2)}%;background:${c[2]}"></span>`).join('')}</div>
+    <table>${comp.map(c => `<tr><td><span class="legend"><span><i style="background:${c[2]}"></i></span></span>${c[0]}</td><td>${won(c[1])}</td><td>${aPct((c[1] || 0) / gross)}</td></tr>`).join('')}
+    <tr><td><span class="legend"><span><i style="background:var(--debt)"></i></span></span>부채 (마이너스통장)</td><td class="neg">${won(L.debt)}</td><td></td></tr></table>
+    <div class="note" style="margin-top:10px">투자자산(시장 노출) ${won(aNum(aS('대시보드', 'B17')))} (${aPct(aNum(aS('대시보드', 'C17')))}) · 비투자자산 ${won(aNum(aS('대시보드', 'B18')))} (${aPct(aNum(aS('대시보드', 'C18')))})</div></div>`;
+
+  // ---- trend ----
+  h += `<div class="two"><div class="card"><h2>순자산 추이</h2>${aLineChart(M.map(m => ({ x: aYmd(m.date).slice(2, 7), y: m.total })), v => (v / 10000).toFixed(0) + '만')}</div>
+    <div class="card"><h2>투자 버킷 누적 수익률</h2>${aLineChart(M.filter(m => m.cumRet != null).map(m => ({ x: aYmd(m.date).slice(2, 7), y: m.cumRet })), v => (v * 100).toFixed(1) + '%')}</div></div>`;
+
+  // ---- bucket tiers ----
+  const tierRow = r => {
+    const name = aS('대시보드', 'A' + r);
+    const cells = ['B', 'C', 'D', 'E', 'F', 'G'].map(c => aS('대시보드', c + r));
+    return `<tr><td>${esc(name)}</td><td>${typeof cells[0] === 'number' ? aPct(cells[0], 0) : esc(cells[0])}</td><td>${won(aNum(cells[1]))}</td><td><b>${aPct(aNum(cells[2]))}</b></td>
+      <td>${typeof cells[4] === 'number' ? aPct(cells[4], 0) : '-'} ~ ${typeof cells[5] === 'number' ? aPct(cells[5], 0) : '-'}</td><td>${aTag(aS('대시보드', 'H' + r))}</td></tr>`;
+  };
+  h += `<div class="card"><h2>투자 버킷 비중 <small>${esc(aS('대시보드', 'D4') || '')}</small></h2>
+    <table><tr><th>1층 — 위험/안전</th><th>목표</th><th>금액</th><th>현재</th><th>허용 범위</th><th>판정</th></tr>${tierRow(36)}${tierRow(37)}</table>
+    <div style="height:14px"></div>
+    <table><tr><th>2층 — 슬리브</th><th>목표</th><th>금액</th><th>현재</th><th>허용 범위</th><th>판정</th></tr>${[41, 42, 43, 44, 45].map(tierRow).join('')}</table></div>`;
+
+  // ---- ladder ----
+  const curStep = aNum(aS('대시보드', 'E2')) ?? 0, reach = aNum(aS('사다리', 'B12'));
+  let streak = 0; for (let i = M.length - 1; i >= 0; i--) { if ((M[i].debt ?? -1) >= 0) streak++; else break; }
+  const CASH_GOAL = 7050000, cashPct = Math.min(1, (L.cash || 0) / CASH_GOAL);
+  h += `<div class="card"><h2>위험자산 사다리 <small>현재 ${curStep}단계 · 엑셀 판정 도달 가능 ${reach ?? '-'}단계</small></h2><div class="steps">${[6, 7, 8, 9, 10].map((r, i) => `
+    <div class="step ${i === curStep ? 'cur' : ''}"><div class="n">${aS('사다리', 'A' + r)}단계 ${i === curStep ? '◀ 현재' : ''}</div>
+    <div class="p">위험 ${aPct(aNum(aS('사다리', 'C' + r)), 0)} · 코어 ${aPct(aNum(aS('사다리', 'D' + r)), 0)}</div>
+    <div style="margin-top:6px">${esc(aS('사다리', 'B' + r))}</div></div>`).join('')}</div>
+    <div class="cond"><b>1단계 조건</b> — 마이너스통장 0원 연속 ${streak}/3개월 기록 ${L.debt < 0 ? `(현재 부채 ${won(Math.abs(L.debt))})` : ''}
+      <div class="prog"><span style="width:${Math.min(100, streak / 3 * 100).toFixed(0)}%"></span></div></div>
+    <div class="cond"><b>2단계 조건</b> — 현금 완충 ${won(L.cash)} / ${won(CASH_GOAL)} (${aPct(cashPct)})
+      <div class="prog"><span style="width:${(cashPct * 100).toFixed(1)}%"></span></div></div>
+    ${assetLadderCond()}
+    <div class="cond" style="color:var(--sub)">3단계의 나머지 조건(규칙 5-B 12개월)과 4단계(-20% 하락 통과)는 엑셀 「사다리」 시트에서 직접 확인하세요.</div></div>`;
+
+  // ---- holdings ----
+  const hold = [];
+  for (let r = 4; r <= 40; r++) { const nm = aS('종목기록', 'A' + r); if (typeof nm === 'string' && aNum(aS('종목기록', 'D' + r)) != null && !nm.startsWith('※')) hold.push(r); }
+  h += `<div class="card"><h2>보유 종목</h2><table><tr><th>종목</th><th>슬리브</th><th>평가액</th><th>평가손익</th><th>버킷 대비</th><th>상태</th></tr>${hold.map(r => {
+    const pnl = aNum(aS('종목기록', 'F' + r));
+    return `<tr><td>${esc(aS('종목기록', 'A' + r))} <span style="color:var(--sub);font-size:12px">${esc(aS('종목기록', 'M' + r) || '')}</span></td><td>${esc(aS('종목기록', 'B' + r))}</td><td>${won(aNum(aS('종목기록', 'D' + r)))}</td>
+      <td class="${pnl >= 0 ? 'pos' : 'neg'}">${aSgn(pnl)}${won(pnl)}</td><td>${aPct(aNum(aS('종목기록', 'G' + r)))}</td><td>${aTag(aS('종목기록', 'L' + r))}</td></tr>`;
+  }).join('')}</table>
+  ${hold.some(r => /소급/.test(String(aS('종목기록', 'I' + r) || ''))) ? '<div class="note" style="margin-top:10px">⚠ 반증 조건·매도 기준이 비어 있는 주도주가 있습니다 (엑셀 「종목기록」 I·J열 — 소급 작성 필요).</div>' : ''}</div>`;
+
+  // ---- rule compliance ----
+  h += `<div class="card"><h2>규칙 5-B 준수 <small>종합: ${esc(aS('규칙준수', 'B11') || '-')}</small></h2><table><tr><th>지표</th><th>분모</th><th>분자</th><th>상태</th></tr>${[7, 8, 9].map(r =>
+    `<tr><td>${esc(aS('규칙준수', 'A' + r))}</td><td>${aS('규칙준수', 'B' + r) ?? '-'}</td><td>${aS('규칙준수', 'C' + r) ?? '-'}</td><td>${aTag(aS('규칙준수', 'E' + r))}</td></tr>`).join('')}</table></div>`;
+
+  // ---- goal ----
+  const g16 = aNum(aS('목표계산', 'B16')), g17 = aNum(aS('목표계산', 'B17')), g18 = aNum(aS('목표계산', 'B18'));
+  let goalRows = '';
+  for (let r = 10; r <= 12; r++) {
+    const amt = aNum(aS('목표계산', 'B' + r)); if (!amt) continue;
+    goalRows += `<tr><td>${esc(aS('목표계산', 'A' + r))}</td><td>${won(amt)}</td><td>${aS('목표계산', 'C' + r)}년 후</td><td>${won(aNum(aS('목표계산', 'D' + r)))}</td><td><b>${won(aNum(aS('목표계산', 'H' + r)))}</b></td></tr>`;
+  }
+  h += `<div class="card"><h2>목표 관리 <small>월 필요 적립액 vs 실제 저축</small></h2>
+    <table><tr><th>목표</th><th>목표 금액(오늘 돈)</th><th>시점</th><th>준비금</th><th>필요 월적립</th></tr>${goalRows}</table>
+    <div style="margin-top:12px;font-size:14px">필요 합계 <b>${won(g16)}</b> · 실제 저축 <b>${won(g17)}</b> · 부족 <b class="${g18 > 0 ? 'neg' : 'pos'}">${won(g18)}</b></div>
+    <div class="note">${esc(aS('목표계산', 'B19') || '')} (현금 완충 705만원 달성 전까지는 참고용)</div></div>`;
+
+  view().innerHTML = h;
+}
+
 function render() {
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
-  ({ input: viewInput, history: viewHistory, analysis: viewAnalysis, settings: viewSettings })[state.tab]();
+  ({ input: viewInput, history: viewHistory, analysis: viewAnalysis, asset: viewAsset, settings: viewSettings })[state.tab]();
   window.scrollTo(0, 0);
 }
 
@@ -497,6 +691,7 @@ function renderImport() {
   $('#modal .sheet').innerHTML = `<h2 style="margin:0 0 6px;font-size:16px">엑셀 올리기</h2>
     <div class="note" style="margin:0 0 10px">카드 이용내역, 은행 거래내역, 지출점검시트(원본데이터)·네이버가계부 내려받기 파일을 한 번에 여러 개 올릴 수 있어요.</div>
     <input type="file" id="impFile" accept=".xls,.xlsx" multiple>
+    ${imp.asset ? `<div class="banner ok" style="margin-top:12px">자산관리시트 ${esc(imp.asset.file_name)} — 월별기록 기준 ${assetLatestLabel(imp.asset)} · 저장하면 '자산' 탭에 반영됩니다</div>` : ''}
     ${imp.files.length ? `<div class="banner ${fresh.length ? 'ok' : 'warn'}" style="margin-top:12px">
       ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}
       → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
@@ -506,7 +701,8 @@ function renderImport() {
       <div class="note">체크를 풀면 가져오지 않습니다. 분류는 파일에 적힌 값을 쓰고, 비어 있으면 같은 사용처를 전에 분류한 대로 채웠어요. 처음 보는 곳은 '미분류'예요.${unc ? ` <b>미분류 ${unc}건</b>` : ''}</div>
       <div style="overflow-x:auto;margin-top:8px"><table><tr><th></th><th>날짜</th><th style="text-align:left">사용처</th><th>금액</th><th>분류</th></tr>${rows || '<tr><td colspan="5" class="note">새로 가져올 내역이 없습니다.</td></tr>'}</table></div>
       <div class="note" style="margin-top:8px">선택 ${on.length}건 · 지출 ${won(sumOut)} · 수입 ${won(sumIn)}</div>
-      <button class="btn" data-act="impGo" ${on.length ? '' : 'disabled style="opacity:.5"'}>${on.length}건 가져오기</button>` : ''}
+      ` : ''}
+    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : `${on.length}건 가져오기`}</button>` : ''}
     <button class="btn sec" data-act="closeModal">닫기</button>`;
   $('#impFile').onchange = e => e.target.files.length && loadImportFiles([...e.target.files]);
 }
@@ -514,9 +710,25 @@ async function loadImportFiles(files) {
   await run(async () => {
     await loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js');
     const parsed = [], ruleMap = new Map();
-    state.imp.rules = [];
+    state.imp.rules = []; state.imp.asset = null;
     for (const f of files) {
-      const wb = XLSX.read(await f.arrayBuffer(), { type: 'array', cellDates: true });
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+      if (wb.SheetNames.includes('월별기록') && wb.SheetNames.includes('대시보드')) {   // 자산관리시트: 날짜를 엑셀 일련번호 그대로 두기 위해 cellDates 없이 다시 읽음
+        const wb2 = XLSX.read(buf, { type: 'array' }), sheets = {};
+        for (const sn of ['목표계산', '월별기록', '대시보드', '사다리', '비중조정이력', '규칙준수', '종목기록']) {
+          const ws = wb2.Sheets[sn]; if (!ws) continue;
+          const o = {};
+          for (const addr of Object.keys(ws)) {
+            if (addr.startsWith('!')) continue;
+            const cell = ws[addr]; if (!cell || cell.t === 'e' || cell.v == null || cell.v === '') continue;
+            o[addr] = cell.v;
+          }
+          sheets[sn] = o;
+        }
+        state.imp.asset = { file_name: f.name, sheets };
+        continue;
+      }
       for (const rn of wb.SheetNames.filter(n => n.includes('분류규칙'))) {
         for (const r of XLSX.utils.sheet_to_json(wb.Sheets[rn], { header: 1, raw: true, defval: '' })) {
           for (const [ki, ni] of [[0, 1], [3, 4]]) {
@@ -528,20 +740,26 @@ async function loadImportFiles(files) {
       let res = null;
       const names = [...wb.SheetNames.filter(n => n.includes('원본데이터')), ...wb.SheetNames.filter(n => !n.includes('원본데이터'))];
       for (const sn of names) { res = detectAndParse(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' }), f.name); if (res) break; }
-      if (!res) throw new Error(`${f.name}: 카드 이용내역('이용일'), 은행 거래내역('거래일시'), 가계부/지출점검시트('날짜·사용처·현금·카드') 형식이 아닙니다`);
+      if (!res) throw new Error(`${f.name}: 카드 이용내역('이용일'), 은행 거래내역('거래일시'), 가계부/지출점검시트('날짜·사용처·현금·카드'), 자산관리시트('월별기록·대시보드' 시트) 형식이 아닙니다`);
       parsed.push(res);
     }
     state.imp.files = parsed; state.imp.rules = [...ruleMap].map(([key, nature]) => ({ key, nature })); buildCands(); renderImport();
   });
 }
 const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.rules));
-handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [] }; openModal(''); renderImport(); };
+handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
   const rows = state.imp.cands.filter(x => x._on).map(({ _dup, _on, _cardPay, ...r }) => r);
-  if (!rows.length) return;
-  const newRules = impNewRules();
-  if (newRules.length) { await backend.setRules(newRules); newRules.forEach(r => { state.rules[r.key] = r.nature; }); }
-  const n = await backend.importTx(rows); const all = await backend.loadAll(); state.tx = all.tx; prep(); closeModal(); toast(`${n}건 가져옴${newRules.length ? ` · 규칙 ${newRules.length}개 추가` : ''}`); render();
+  if (!rows.length && !state.imp.asset) return;
+  const parts = [];
+  if (state.imp.asset) { state.asset = await backend.saveAsset(state.imp.asset); state.assetErr = ''; parts.push('자산 데이터 저장'); }
+  if (rows.length) {
+    const newRules = impNewRules();
+    if (newRules.length) { await backend.setRules(newRules); newRules.forEach(r => { state.rules[r.key] = r.nature; }); }
+    const n = await backend.importTx(rows); const all = await backend.loadAll(); state.tx = all.tx; state.asset = all.asset || state.asset; state.assetErr = all.assetErr || ''; prep();
+    parts.push(`${n}건 가져옴`); if (newRules.length) parts.push(`규칙 ${newRules.length}개 추가`);
+  }
+  closeModal(); toast(parts.join(' · ')); render();
 });
 document.addEventListener('change', e => {
   const el = e.target.closest('[data-imp]'); if (!el || !state.imp) return;
@@ -565,7 +783,7 @@ async function enter(session) {
   await run(async () => {
     const all = await backend.loadAll();
     state.tx = all.tx; state.rules = { ...DEFAULT_RULES, ...Object.fromEntries((all.rules || []).map(r => [r.key, r.nature])) };
-    state.settings = { ...DEFAULT_SETTINGS, ...(all.settings || {}) }; prep();
+    state.settings = { ...DEFAULT_SETTINGS, ...(all.settings || {}) }; state.asset = all.asset || null; state.assetErr = all.assetErr || ''; prep();
     if (DEMO) { const seed = new URLSearchParams(location.search).get('seed'); if (seed) { const j = await (await fetch(seed)).json(); if (j.rules) { await backend.setRules(j.rules); j.rules.forEach(r => state.rules[r.key] = r.nature); } if (j.settings) state.settings = { ...DEFAULT_SETTINGS, ...j.settings }; await backend.importTx(j.tx); state.tx = (await backend.loadAll()).tx; prep(); } }
     state.tab = new URLSearchParams(location.search).get('tab') || state.tab; render();
   });

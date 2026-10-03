@@ -16,13 +16,13 @@
   :root {
     --bg:#f4f5f7; --card:#fff; --text:#1c1f26; --sub:#6b7280; --line:#e5e7eb;
     --ok:#15803d; --okbg:#e8f5ec; --warn:#b45309; --warnbg:#fdf1dc; --bad:#b42318; --badbg:#fde8e6;
-    --accent:#2563eb; --c1:#2563eb; --c2:#0d9488; --c4:#d97706; --inc:#15803d; --exp:#1c1f26;
+    --accent:#2563eb; --c1:#2563eb; --c2:#0d9488; --c4:#d97706; --inc:#15803d; --exp:#1c1f26; --c3:#7c3aed; --c5:#db2777; --c6:#64748b; --debt:#b42318;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg:#0f1115; --card:#1a1d24; --text:#e8eaee; --sub:#9aa1ad; --line:#2a2e38;
       --ok:#4ade80; --okbg:#12301d; --warn:#fbbf24; --warnbg:#35290d; --bad:#f87171; --badbg:#3a1714;
-      --accent:#6b9bff; --c1:#6b9bff; --c2:#2dd4bf; --c4:#fbbf24; --inc:#4ade80; --exp:#e8eaee;
+      --accent:#6b9bff; --c1:#6b9bff; --c2:#2dd4bf; --c4:#fbbf24; --inc:#4ade80; --exp:#e8eaee; --c3:#a78bfa; --c5:#f472b6; --c6:#94a3b8; --debt:#f87171;
     }
   }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -92,7 +92,7 @@
   #toast { position:fixed; left:50%; bottom:92px; transform:translateX(-50%); background:#1c1f26; color:#fff; padding:10px 18px; border-radius:999px; font-size:14px; z-index:30; opacity:0; transition:opacity .2s; pointer-events:none; }
   #toast.show { opacity:.95; }
   .two { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
-  @media (max-width:560px) { .two { grid-template-columns:1fr; } }
+  @media (max-width:560px) { .two { grid-template-columns:1fr; } } .hero .row { display:flex; gap:20px; flex-wrap:wrap; margin-top:8px; } .hero .row div { font-size:13px; color:var(--sub); } .hero .row b { display:block; font-size:17px; color:var(--text); } .stack { display:flex; height:22px; border-radius:6px; overflow:hidden; margin:6px 0 10px; background:var(--bg); } .stack span { display:block; height:100%; } .legend { display:inline-flex; flex-wrap:wrap; gap:6px 16px; font-size:13px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; } .steps { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; } .step { border:1px solid var(--line); border-radius:10px; padding:10px; font-size:12px; } .step.cur { border:2px solid var(--accent); } .step .n { font-size:18px; font-weight:700; } .step .p { color:var(--sub); } .cond { font-size:13px; margin:12px 0 0; } @media (max-width:640px) { .steps { grid-template-columns:1fr 1fr; } }
 </style>
 </head>
 <body>
@@ -116,7 +116,7 @@
     <button data-tab="input"><b>＋</b>입력</button>
     <button data-tab="history"><b>☰</b>내역</button>
     <button data-tab="analysis"><b>▥</b>분석</button>
-    <button data-tab="settings"><b>⚙</b>설정</button>
+    <button data-tab="asset"><b>◎</b>자산</button><button data-tab="settings"><b>⚙</b>설정</button>
   </div></nav>
 </div>
 <div id="modal" hidden></div>
