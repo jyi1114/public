@@ -202,10 +202,11 @@ function viewHistory() {
   view().innerHTML = `<div class="card" style="overflow:visible;position:relative;z-index:5"><input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}">
     <div class="hfsel"><span class="hflbl">필터</span><select id="hFKind">${[['', '전체'], ['expense', '지출'], ['income', '수입'], ['excluded', '이체·제외']].map(([v, l]) => `<option value="${v}" ${v === (F.kind || '') ? 'selected' : ''}>${l}</option>`).join('')}</select><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
       <div class="catWrap"><button type="button" id="hFCatBtn" class="catBtn"></button>
-        <div class="catPanel" id="hCatPanel" hidden><button type="button" class="catClear" data-clear="1">전체 해제</button>${cats.map(c => `<label class="catRow"><input type="checkbox" value="${esc(c)}" ${F.cats.includes(c) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}</div></div></div></div>
+        <div class="catPanel" id="hCatPanel" hidden><button type="button" class="catClear" data-clear="1">전체 해제</button>${cats.map(c => `<label class="catRow"><input type="checkbox" value="${esc(c)}" ${F.cats.includes(c) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}</div></div><button type="button" class="hreset" id="hReset">초기화</button></div></div>
     <div id="hBody"></div>`;
   const label = () => { const n = F.cats.length; $('#hFCatBtn').textContent = (n === 0 ? '대분류 전체' : n === 1 ? F.cats[0] : `${F.cats[0]} 외 ${n - 1}`) + ' ▾'; };
   $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; state.hLimit = 200; renderHistoryBody(); });
+  $('#hReset').onclick = () => { state.hFilter = { month: todayISO().slice(0, 7), cats: [], kind: null }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; viewHistory(); };
   $('#hFKind').onchange = e => { F.kind = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
   $('#hFMonth').onchange = e => { F.month = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
   $('#hFCatBtn').onclick = () => { const p = $('#hCatPanel'); p.hidden = !p.hidden; };
@@ -269,6 +270,10 @@ function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마�
   return `<div id="mChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div><div class="lg"><span><i style="background:var(--inc)"></i>수입</span><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
 }
 
+function saveAScroll() {   // 분석 탭의 내부 스크롤 영역 위치 저장 (화면에 분석 탭이 그려져 있을 때만)
+  const cw = $('#mChartWrap'), tw = $('#mTableWrap'), kw = $('#cTableWrap'), dw = $('#dListWrap');
+  if (cw && tw && kw) state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop, c: kw.scrollTop, d: dw ? dw.scrollTop : 0, dk: dw ? dw.dataset.key : '' };
+}
 function viewAnalysis() {
   const S = state.settings, today = todayISO(), spend = state.tx.filter(isSpend);
   if (!spend.length && !state.tx.some(t => t.kind === 'income')) { view().innerHTML = '<div class="card"><div class="note">분석할 지출 내역이 아직 없습니다. 입력하거나 설정에서 기존 내역을 가져오세요.</div></div>'; return; }
@@ -288,7 +293,7 @@ function viewAnalysis() {
   });
   const keys = Object.keys(B).sort(), curKey = today.slice(0, 7);
   const note = k => k === curKey ? ' (진행 중)' : (k === keys[0] && +B[k].first.slice(8) > 9 ? ' (일부 기간)' : '');
-  if (!state.aMonth || !B[state.aMonth]) state.aMonth = [...keys].reverse().find(k => B[k].n >= 5) || keys[keys.length - 1];
+  if (!state.aMonth || !B[state.aMonth]) state.aMonth = B[curKey] ? curKey : ([...keys].reverse().find(k => k <= curKey) || keys[0]);   // 미래 달(할부)은 기본 선택하지 않음
   let h = '';
 
   // --- next card payment ---
@@ -421,13 +426,34 @@ function viewAnalysis() {
         ${ct.map(t => `<tr><td>${mmdd(t.tx_date)}</td><td style="text-align:left">${esc(t.place || t.memo)}</td><td style="text-align:left">${esc((t.cls || '미분류').replace('>', ' › '))}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div>
       <div class="note">합계 ${won(cuse)} · ${ct.length}건 · 첫 거래 ${mmdd(ct[0].tx_date)} · 마지막 거래 ${mmdd(ct[ct.length - 1].tx_date)}</div>` : '<div class="note">이 청구주기에 카드 사용 내역이 없습니다.</div>'}</div>`;
   }
-  const cw0 = $('#mChartWrap'), tw0 = $('#mTableWrap'), kw0 = $('#cTableWrap');   // 다시 그리기 전 스크롤 위치 저장
-  const dw0 = $('#dListWrap');
-  if (cw0 && tw0 && kw0) state.aScroll = { l: cw0.scrollLeft, t: tw0.scrollTop, c: kw0.scrollTop, d: dw0 ? dw0.scrollTop : 0, dk: dw0 ? dw0.dataset.key : '', right: cw0.scrollLeft + cw0.clientWidth >= cw0.scrollWidth - 2 };
+  saveAScroll();   // 다시 그리기 전 스크롤 위치 저장
+  const hadScroll = !!state.aScroll;
   view().innerHTML = h;
   const cw = $('#mChartWrap'), tw = $('#mTableWrap'), kw = $('#cTableWrap');
-  if (state.aScroll) { cw.scrollLeft = state.aScroll.right ? cw.scrollWidth : state.aScroll.l; tw.scrollTop = state.aScroll.t; kw.scrollTop = state.aScroll.c || 0; const dw = $('#dListWrap'); if (dw) dw.scrollTop = dw.dataset.key === state.aScroll.dk ? (state.aScroll.d || 0) : 0; }   // 오른쪽 끝을 보고 있었다면 새 달이 생겨도 계속 오른쪽 끝
-  else { cw.scrollLeft = cw.scrollWidth; state.aScroll = { l: cw.scrollLeft, t: 0, c: 0, right: true }; }   // 처음에는 최근 달이 보이도록 오른쪽 끝으로
+  const topOf = (wrap, row) => {
+    const th = wrap.querySelector('th'), hh = th ? th.offsetHeight : 0, want = Math.max(0, row.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop - hh);
+    // 선택한 행 아래에 행이 적으면 맨 위까지 올라오지 못하므로, 필요한 만큼 빈 여백을 덧붙인다
+    let sp = wrap.querySelector('.tspace'); const lack = want - (wrap.scrollHeight - (sp ? sp.offsetHeight : 0) - wrap.clientHeight);
+    if (lack > 0) { if (!sp) { sp = document.createElement('div'); sp.className = 'tspace'; wrap.appendChild(sp); } sp.style.height = Math.ceil(lack) + 'px'; } else if (sp) sp.style.height = '0px';
+    return want;
+  };
+  const alignM = () => {   // 선택한 달: 차트는 오른쪽 끝에, 표는 맨 위(머리글 아래)에
+    const g = cw.querySelector(`g[data-month="${state.aMonth}"]`), idx = keys.indexOf(state.aMonth);
+    let right = 8 + (idx + 1) * 76; try { if (g) { const b = g.getBBox(); right = b.x + b.width; } } catch (_) {}
+    cw.scrollLeft = Math.max(0, right - cw.clientWidth);
+    const row = tw.querySelector(`tr[data-month="${state.aMonth}"]`); if (row) tw.scrollTop = topOf(tw, row);
+  };
+  const alignC = () => { const row = kw.querySelector(`tr[data-cycle="${state.cSel}"]`); if (row) kw.scrollTop = topOf(kw, row); };
+  if (hadScroll) {
+    const keep = (wrap, top) => {   // 정렬 때 붙였던 빈 여백을 다시 그린 뒤에도 유지 (스크롤이 튀지 않게)
+      const lack = top - (wrap.scrollHeight - wrap.clientHeight);
+      if (lack > 0) { const sp = document.createElement('div'); sp.className = 'tspace'; sp.style.height = Math.ceil(lack) + 'px'; wrap.appendChild(sp); }
+      wrap.scrollTop = top;
+    };
+    cw.scrollLeft = state.aScroll.l || 0; keep(tw, state.aScroll.t || 0); keep(kw, state.aScroll.c || 0); const dw = $('#dListWrap'); if (dw) dw.scrollTop = dw.dataset.key === state.aScroll.dk ? (state.aScroll.d || 0) : 0; }
+  else { alignM(); alignC(); state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop, c: kw.scrollTop, d: 0, dk: '' }; }   // 처음에는 선택한 달·청구주기가 보이도록 정렬
+  if (state.aAlign === 'month') alignM(); else if (state.aAlign === 'cycle') alignC();
+  state.aAlign = null;
   const pick = e => {
     const el = e.target.closest('[data-month]'); if (!el || !B[el.dataset.month]) return;
     state.aMonth = el.dataset.month; viewAnalysis();
@@ -439,14 +465,14 @@ function viewAnalysis() {
     state.cSel = el.dataset.cycle; viewAnalysis();
     const d = $('#cDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
-  $('#cSel').onchange = e => { state.cSel = e.target.value; viewAnalysis(); };
+  $('#cSel').onchange = e => { state.cSel = e.target.value; state.aAlign = 'cycle'; viewAnalysis(); };
   view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: [], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   view().querySelectorAll('[data-cat]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
-  $('#aMonth').onchange = e => { state.aMonth = e.target.value; viewAnalysis(); };
+  $('#aMonth').onchange = e => { state.aMonth = e.target.value; state.aAlign = 'month'; viewAnalysis(); };
 }
 
 function viewSettings() {
@@ -663,9 +689,11 @@ function viewAsset() {
 }
 
 function render() {
+  if (state.shown === 'analysis') { saveAScroll(); state.aPageY = window.scrollY; }   // 분석 탭을 떠나기(또는 다시 그리기) 직전의 위치 저장
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   ({ input: viewInput, history: viewHistory, analysis: viewAnalysis, asset: viewAsset, settings: viewSettings })[state.tab]();
-  window.scrollTo(0, 0);
+  state.shown = state.tab;
+  if (state.tab === 'analysis' && state.aPageY != null) { window.scrollTo(0, state.aPageY); state.aPageY = null; } else window.scrollTo(0, 0);
 }
 
 // ---------- actions ----------
