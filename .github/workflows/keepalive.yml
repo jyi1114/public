@@ -1,0 +1,46 @@
+# Supabase 무료 프로젝트는 7일간 사용이 없으면 일시정지된다.
+# 매일 한 번 데이터를 읽지 않는 keepalive() 함수를 호출해 깨워 둔다.
+# 실패하면(예: 이미 일시정지됨) 이 작업이 실패로 표시되고 GitHub이 이메일로 알려준다.
+name: Keep Supabase awake
+
+on:
+  schedule:
+    - cron: '17 18 * * *'   # 매일 18:17 UTC = 한국시간 03:17
+  workflow_dispatch:         # Actions 탭에서 수동 실행 가능
+
+permissions:
+  contents: write            # 매월 1일 기록 파일 갱신용
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Supabase keepalive
+        run: |
+          # 공개용(publishable) 키 — 앱 config.js에 있는 것과 같은 공개 값
+          curl -fsS --retry 3 --retry-delay 20 -X POST \
+            "https://hxrcqfwkoidxundlcolw.supabase.co/rest/v1/rpc/keepalive" \
+            -H "apikey: sb_publishable_mOf5qvZ7khY4sTPaP7Qnhg_-1WbFWUz" \
+            -H "Content-Type: application/json" \
+            -d '{}'
+          echo
+          echo "Supabase responded OK"
+
+      # GitHub은 60일 동안 저장소에 변화가 없으면 예약 작업을 끈다.
+      # 매월 1일 작은 기록 파일을 갱신해 저장소를 '활동 중'으로 유지한다.
+      - name: Checkout (1st of month only)
+        if: github.event_name == 'schedule'
+        uses: actions/checkout@v4
+
+      - name: Monthly activity stamp
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d)" = "01" ]; then
+            date -u +%Y-%m-%dT%H:%M:%SZ > .github/keepalive-stamp
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/keepalive-stamp
+            git commit -m "keepalive: monthly stamp" && git push || echo "nothing to commit"
+          else
+            echo "Not the 1st of the month - skipping stamp"
+          fi
