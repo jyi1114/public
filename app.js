@@ -219,19 +219,22 @@ function meter(label, value, limit, right) {
   const r = limit ? value / limit : 0, c = r > 1 ? 'over' : r > 0.8 ? 'mid' : '';
   return `<div class="meter"><div class="top"><span>${label}</span><span>${right}</span></div><div class="prog"><span class="${c}" style="width:${Math.min(100, r * 100).toFixed(1)}%"></span></div></div>`;
 }
-function barChart(items, limit) {
-  const W = 520, H = 200, pl = 8, pr = 8, pt = 24, pb = 26;
+function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마다 고정 폭 칸 → 많으면 가로 스크롤
+  const SLOT = 64, H = 200, pl = 8, pr = 8, pt = 24, pb = 26, W = items.length * SLOT + pl + pr, bw = 36;
   const maxV = Math.max(limit * 1.15, ...items.map(i => i.total), 1), y = v => pt + (H - pt - pb) * (1 - v / maxV);
-  const step = (W - pl - pr) / items.length, bw = Math.min(56, step * 0.6), cols = [['고정', 'var(--c1)'], ['변동', 'var(--c2)'], ['비정기', 'var(--c4)']];
+  const cols = [['고정', 'var(--c1)'], ['변동', 'var(--c2)'], ['비정기', 'var(--c4)']];
   let g = '';
   items.forEach((it, i) => {
-    const x = pl + step * i + (step - bw) / 2; let acc = 0;
+    const sx = pl + SLOT * i, x = sx + (SLOT - bw) / 2, sel = it.k === selected; let acc = 0;
+    g += `<g data-month="${esc(it.k)}" style="cursor:pointer"${selected && !sel ? ' opacity=".5"' : ''}>`;
+    if (sel) g += `<rect x="${sx + 2}" y="2" width="${SLOT - 4}" height="${H - 4}" rx="8" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)" stroke-width="1.5"/>`;
+    g += `<rect x="${sx}" y="0" width="${SLOT}" height="${H}" fill="transparent"/>`;
     cols.forEach(([k, c]) => { const v = it[k] || 0; if (v > 0) g += `<rect x="${x}" y="${y(acc + v)}" width="${bw}" height="${y(acc) - y(acc + v)}" fill="${c}"/>`; acc += v; });
-    g += `<text x="${x + bw / 2}" y="${y(it.total) - 6}" text-anchor="middle" style="fill:var(--text)">${(it.total / 10000).toFixed(0)}만</text><text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text>`;
+    g += `<text x="${x + bw / 2}" y="${y(it.total) - 6}" text-anchor="middle" style="fill:var(--text)">${(it.total / 10000).toFixed(0)}만</text><text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text></g>`;
   });
   const ly = y(limit);
-  g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="var(--bad)" stroke-dasharray="4 3"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)">한도 ${(limit / 10000).toFixed(0)}만</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">${g}</svg><div class="lg"><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
+  g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="var(--bad)" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`;
+  return `<div id="mChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div><div class="lg"><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
 }
 
 function viewAnalysis() {
@@ -266,16 +269,17 @@ function viewAnalysis() {
     ${est != null ? `<div class="note">${el}/${total}일 경과 · 이 속도면 청구액 약 <b>${won(est)}</b> (한도의 ${pct(est / S.cardLimit)})</div>` : ''}</div>`;
 
   // --- monthly ---
-  const mrows = keys.slice(-12).map(k => ({ k, ...B[k], label: k.slice(2) }));
-  h += `<div class="card"><h2>월별 지출 <small>카드대금·저축 제외</small></h2>${barChart(mrows, S.monthLimit)}
-    <div style="height:10px"></div><table><tr><th>월</th><th>지출 계</th><th>수입</th><th>판정</th><th>배달</th><th>술·유흥</th></tr>
-    ${[...mrows].reverse().map(m => `<tr><td>${m.k}<span class="note">${note(m.k)}</span></td><td><b>${won(m.total)}</b></td><td>${won(incBy[m.k] || 0)}</td><td>${tag(m.total > S.monthLimit ? '⚠ 초과' : '정상')}</td><td>${m.deliv}건</td><td>${won(m.booze)}</td></tr>`).join('')}</table>
+  const mrows = keys.map(k => ({ k, ...B[k], label: k.slice(2) }));
+  const sth = 'position:sticky;top:0;background:var(--card)';
+  h += `<div class="card"><h2>월별 지출 <small>카드대금·저축 제외 · 누르면 아래 월 상세가 바뀝니다</small></h2>${barChart(mrows, S.monthLimit, state.aMonth)}
+    <div style="height:10px"></div><div id="mTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">월</th><th style="${sth}">지출 계</th><th style="${sth}">수입</th><th style="${sth}">판정</th><th style="${sth}">배달</th><th style="${sth}">술·유흥</th></tr>
+    ${[...mrows].reverse().map(m => { const sel = m.k === state.aMonth; return `<tr data-month="${m.k}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${m.k}<span class="note">${note(m.k)}</span></td><td><b>${won(m.total)}</b></td><td>${won(incBy[m.k] || 0)}</td><td>${tag(m.total > S.monthLimit ? '⚠ 초과' : '정상')}</td><td>${m.deliv}건</td><td>${won(m.booze)}</td></tr>`; }).join('')}</table></div>
     <div class="note">진행 중이거나 일부 기간만 있는 달은 한도 판정이 의미 없습니다.</div></div>`;
 
   // --- month detail ---
   const cur = B[state.aMonth], cats = Object.entries(cur.cats).sort((a, b) => b[1] - a[1]);
   const irreg = cur.items.filter(t => t._n === '비정기').sort((a, b) => a.tx_date < b.tx_date ? 1 : -1), top = [...cur.items].sort((a, b) => b.amount - a.amount).slice(0, 8);
-  h += `<div class="card"><h2>월 상세 <small><select id="aMonth" style="width:auto;font-size:13px;padding:4px 8px">${[...keys].reverse().map(k => `<option value="${k}" ${k === state.aMonth ? 'selected' : ''}>${k}${note(k)}</option>`).join('')}</select></small></h2>
+  h += `<div class="card" id="mDetail"><h2>월 상세 <small><select id="aMonth" style="width:auto;font-size:13px;padding:4px 8px">${[...keys].reverse().map(k => `<option value="${k}" ${k === state.aMonth ? 'selected' : ''}>${k}${note(k)}</option>`).join('')}</select></small></h2>
     ${meter('월 생활비 한도', cur.total, S.monthLimit, `<b>${won(cur.total)}</b> / ${won(S.monthLimit)}${cur.total > S.monthLimit ? ' · ' + won(cur.total - S.monthLimit) + ' 초과' : ''}`)}
     ${meter('배달 (월 한도 횟수)', cur.deliv, S.deliveryLimit, `<b>${cur.deliv}건</b> · ${won(cur.delivAmt)}`)}
     <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
@@ -290,33 +294,47 @@ function viewAnalysis() {
 
   // --- 대전사랑카드(지역화폐) ---
   const snaps = [...(S.prepaidSnaps || [])].sort((a, b) => a.date < b.date ? -1 : 1);
-  const ppTx = state.tx.filter(t => t.pay === 'prepaid' || (t.kind === 'income' && t.cls === '수입>캐시백')), ppTop = state.tx.filter(t => t.kind === 'expense' && (t.cls || '').startsWith('이체>선불충전'));
-  if (ppTx.length || ppTop.length || snaps.length) {
+  const clsOf = t => t.cls || '', isTopT = t => t.kind === 'expense' && clsOf(t).startsWith('이체>선불충전'), isCbUse = t => clsOf(t) === '이체>캐시백사용', isCbEarn = t => t.kind === 'income' && clsOf(t) === '수입>캐시백';
+  const isPPSpend = t => t.kind === 'expense' && t.pay === 'prepaid' && !clsOf(t).startsWith('이체');
+  const ppTx = state.tx.filter(t => isTopT(t) || isCbUse(t) || isCbEarn(t) || isPPSpend(t));
+  if (ppTx.length || snaps.length) {
     const sumOf = (l, f) => l.filter(f).reduce((s, t) => s + t.amount, 0);
-    const spentF = l => sumOf(l, t => t.kind === 'expense' && t.pay === 'prepaid'), cbF = l => sumOf(l, t => t.kind === 'income' && t.cls === '수입>캐시백');   // 수정 창에서 저장해 pay가 바뀌어도 캐시백으로 집계
-    const mTx = ppTx.filter(t => t._m === curKey), mTop = ppTop.filter(t => t._m === curKey);
-    const cbAll = cbF(ppTx), S0 = snaps.length ? snaps[snaps.length - 1] : null;
-    let snapHtml = '';
+    const agg = l => { const topups = sumOf(l, isTopT), spentFull = sumOf(l, isPPSpend), cbEarned = sumOf(l, isCbEarn), cbUsed = sumOf(l, isCbUse); return { topups, spentFull, cbEarned, cbUsed, chargeDelta: topups - (spentFull - cbUsed), cbDelta: cbEarned - cbUsed }; };
+    const A = agg(ppTx), Am = agg(ppTx.filter(t => t._m === curKey)), S0 = snaps.length ? snaps[snaps.length - 1] : null, sg = v => (v > 0 ? '+' : v < 0 ? '−' : '') + won(Math.abs(v));
+    let snapHtml = `<div class="note" style="margin:8px 0 0">받은 캐시백 합계(기록 기간): <b>${won(A.cbEarned)}</b></div>`;
     if (S0) {
-      const aft = ppTx.filter(t => t.tx_date > S0.date), topAft = sumOf(ppTop, t => t.tx_date > S0.date), cashAft = spentF(aft) - cbF(aft);
-      snapHtml = `<div class="note" style="margin:8px 0 0">최근 확인 잔액 (${S0.date.replace(/-/g, '.')}): 충전 ${won(S0.charge)} · 캐시백 ${won(S0.cashback)}</div>
-        <div style="margin-top:6px">추정 충전 잔액 (오늘): <b>${won(S0.charge + topAft - cashAft)}</b></div>
-        <div class="note">앱에 보이는 잔액과 다르면 빠진 기록이 있을 수 있어요. 지금까지 받은 캐시백 (추정) ≈ ${won(cbAll + S0.cashback)} (사용 ${won(cbAll)} + 잔액 ${won(S0.cashback)})</div>`;
+      const Aa = agg(ppTx.filter(t => t.tx_date > S0.date));
+      snapHtml += `<div class="note">최근 확인 잔액 (${S0.date.replace(/-/g, '.')}): 충전 ${won(S0.charge)} · 캐시백 ${won(S0.cashback)}</div>
+        <div style="margin-top:6px">추정 충전 잔액 (오늘): <b>${won(S0.charge + Aa.chargeDelta)}</b> · 추정 캐시백 잔액: <b>${won(S0.cashback + Aa.cbDelta)}</b></div>
+        <div class="note">앱에 보이는 잔액과 다르면 빠진 기록이 있을 수 있어요.</div>`;
+    } else {
+      snapHtml += `<div class="note">기록 기간 순증감: 충전 잔액 ${sg(A.chargeDelta)}, 캐시백 잔액 ${sg(A.cbDelta)}. 앱에 보이는 현재 잔액을 한 번 입력하면 이후 잔액을 추정해요.</div>`;
     }
     h += `<div class="card"><h2>대전사랑카드 <small>지역화폐 · 충전은 지출이 아니라 이체</small></h2>
-      <table><tr><th></th><th>충전</th><th>사용(전액)</th><th>그중 캐시백</th></tr>
-      <tr><td>${curKey.replace('-', '.')}</td><td>${won(sumOf(mTop, () => true))}</td><td>${won(spentF(mTx))}</td><td>${won(cbF(mTx))}</td></tr>
-      <tr><td>전체</td><td>${won(sumOf(ppTop, () => true))}</td><td>${won(spentF(ppTx))}</td><td>${won(cbAll)}</td></tr></table>${snapHtml}
+      <table><tr><th></th><th>충전</th><th>사용(전액)</th><th>캐시백 적립</th><th>캐시백 사용</th></tr>
+      <tr><td>${curKey.replace('-', '.')}</td><td>${won(Am.topups)}</td><td>${won(Am.spentFull)}</td><td>${won(Am.cbEarned)}</td><td>${won(Am.cbUsed)}</td></tr>
+      <tr><td>전체</td><td>${won(A.topups)}</td><td>${won(A.spentFull)}</td><td>${won(A.cbEarned)}</td><td>${won(A.cbUsed)}</td></tr></table>${snapHtml}
       <div class="row2" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="ppDate" type="date" value="${today}"></div><div><label class="f">충전 잔액(원)</label><input id="ppCharge" inputmode="numeric" placeholder="0"></div></div>
       <label class="f">캐시백 잔액(원)</label><input id="ppCb" inputmode="numeric" placeholder="0">
       <button class="btn sec" data-act="saveSnap">잔액 기록</button></div>`;
   }
 
   // --- cycles ---
-  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제</small></h2><table><tr><th>결제일</th><th>사용액</th><th>건수</th><th>변동</th><th>비정기</th><th>판정</th></tr>
-    ${[...ckeys].reverse().slice(0, 12).map(k => { const c = cyc[k]; return `<tr><td>${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td></tr>`; }).join('')}</table>
+  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제</small></h2><div id="cTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">결제일</th><th style="${sth}">사용액</th><th style="${sth}">건수</th><th style="${sth}">변동</th><th style="${sth}">비정기</th><th style="${sth}">판정</th></tr>
+    ${[...ckeys].reverse().map(k => { const c = cyc[k], sel = k === nextKey; return `<tr style="${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td></tr>`; }).join('')}</table></div>
     <div class="note">카드 한도 ${won(S.cardLimit)} (설정에서 변경)</div></div>`;
+  const cw0 = $('#mChartWrap'), tw0 = $('#mTableWrap'), kw0 = $('#cTableWrap');   // 다시 그리기 전 스크롤 위치 저장
+  if (cw0 && tw0 && kw0) state.aScroll = { l: cw0.scrollLeft, t: tw0.scrollTop, c: kw0.scrollTop, right: cw0.scrollLeft + cw0.clientWidth >= cw0.scrollWidth - 2 };
   view().innerHTML = h;
+  const cw = $('#mChartWrap'), tw = $('#mTableWrap'), kw = $('#cTableWrap');
+  if (state.aScroll) { cw.scrollLeft = state.aScroll.right ? cw.scrollWidth : state.aScroll.l; tw.scrollTop = state.aScroll.t; kw.scrollTop = state.aScroll.c || 0; }   // 오른쪽 끝을 보고 있었다면 새 달이 생겨도 계속 오른쪽 끝
+  else { cw.scrollLeft = cw.scrollWidth; state.aScroll = { l: cw.scrollLeft, t: 0, c: 0, right: true }; }   // 처음에는 최근 달이 보이도록 오른쪽 끝으로
+  const pick = e => {
+    const el = e.target.closest('[data-month]'); if (!el || !B[el.dataset.month]) return;
+    state.aMonth = el.dataset.month; viewAnalysis();
+    const d = $('#mDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+  cw.onclick = pick; tw.onclick = pick;
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; viewAnalysis(); };
 }
 
@@ -678,8 +696,26 @@ function parseLedger(aoa, hi, fname) {
   }
   return { type: 'ledger', fname, items };
 }
+function parseLocalPay(aoa, hi, fname) {   // 대전사랑카드 앱 내보내기 (결제·충전 파일 / 캐시백 파일)
+  const col = colMap(aoa[hi]), g = (r, k) => (k in col ? r[col[k]] : '');
+  const items = [], cancels = []; let cancelled = 0;
+  for (const r of aoa.slice(hi + 1)) {
+    const date = cellDate(g(r, '승인일시')); if (!date) continue;
+    const ts = cellStr(g(r, '승인일시')), type = sp1(g(r, '거래유형')), amt = Math.round(Math.abs(toNum(g(r, '금액')))), place = sp1(g(r, '사용처'));
+    if (!amt) continue;
+    if (type.includes('취소')) { cancels.push({ base: type.replace('취소', '').trim(), amt, place }); continue; }
+    items.push({ date, ts, kind: type, amt, place });
+  }
+  for (const c of cancels) {
+    let idx = -1; for (let i = items.length - 1; i >= 0; i--) { const it = items[i]; if (it.kind === c.base && it.amt === c.amt && it.place === c.place) { idx = i; break; } }
+    if (idx >= 0) { items.splice(idx, 1); cancelled++; }
+  }
+  const unknown = items.filter(it => !['결제', '충전', '캐시백 적립', '캐시백 사용'].includes(it.kind)).length;
+  return { type: 'localpay', fname, items, cancelled, unknown };
+}
 function detectAndParse(aoa, fname) {
   const find = pred => aoa.slice(0, 15).findIndex(r => pred(r.map(cellStr)));
+  let hi0 = find(cs => cs.includes('승인일시') && cs.includes('거래유형') && cs.includes('금액')); if (hi0 >= 0) return parseLocalPay(aoa, hi0, fname);
   let hi = find(cs => cs.some(s => /^이용일/.test(s) && s.length <= 6)); if (hi >= 0) return parseCard(aoa, hi, fname);
   hi = find(cs => cs.includes('거래일시')); if (hi >= 0) return parseBank(aoa, hi, fname);
   hi = find(cs => cs.includes('날짜') && (cs.includes('사용처') || cs.includes('사용내역')) && (cs.includes('현금') || cs.includes('카드'))); if (hi >= 0) return parseLedger(aoa, hi, fname);
@@ -700,7 +736,6 @@ function buildCands() {
         if (f.payAs === 'prepaid') {   // 지역화폐: 전액을 지출로, 캐시백(포인트) 사용분은 같은 날 수입으로 따로
           const amount = it.full > 0 ? it.full : it.amount, h = H.ex.get(normPlace(it.name)), ap = it.approval ? 'ap' + it.approval : it.date;
           cands.push({ tx_date: it.date, kind: 'expense', amount, pay: 'prepaid', place: it.name, memo: '', cls: h ? h.cls : '', tag: h ? h.tag : '', source: 'card', import_key: keyOf('pp', it.date, amount, it.name, ap) });
-          if (it.point > 0) cands.push({ tx_date: it.date, kind: 'income', amount: Math.round(it.point), pay: 'prepaid', place: `${it.name} 캐시백 사용`, memo: '', cls: '수입>캐시백', tag: '', source: 'card', import_key: keyOf('cb', it.date, Math.round(it.point), it.name, ap) });
           continue;
         }
         if (it.usd > 0 && !(it.amount > 0)) {   // 해외 결제: 원화 청구액을 사용자가 입력해야 함
@@ -716,6 +751,14 @@ function buildCands() {
           cands.push({ tx_date: date, kind: 'expense', amount, pay: it.check ? 'cash' : 'card', place, memo: '', cls: h ? h.cls : '', tag: mergeTag(h && h.tag, it.n > 1 ? '할부' : ''), source: 'card', import_key: keyOf('cd', date, amount, place, it.approval ? 'ap' + it.approval : `${it.date}:${it.amount}`) });
         }
       }
+    } else if (f.type === 'localpay') {
+      for (const it of f.items) {
+        const nm = it.place || '대전사랑카드', h = H.ex.get(normPlace(nm));
+        if (it.kind === '결제') cands.push({ tx_date: it.date, kind: 'expense', amount: it.amt, pay: 'prepaid', place: nm, memo: '', cls: h ? h.cls : '', tag: h ? h.tag : '', source: 'localpay', import_key: keyOf('lw', it.date, it.amt, it.place, it.ts + '결제') });
+        else if (it.kind === '충전') cands.push({ tx_date: it.date, kind: 'expense', amount: it.amt, pay: 'cash', place: '대전사랑카드 충전', memo: '', cls: '이체>선불충전', tag: '', source: 'localpay', _topup: true, import_key: keyOf('lw', it.date, it.amt, '충전', it.ts) });
+        else if (it.kind === '캐시백 적립') cands.push({ tx_date: it.date, kind: 'income', amount: it.amt, pay: 'prepaid', place: `${nm} 캐시백 적립`, memo: '', cls: '수입>캐시백', tag: '', source: 'localpay', import_key: keyOf('lc', it.date, it.amt, it.place, it.ts + '적립') });
+        else if (it.kind === '캐시백 사용') cands.push({ tx_date: it.date, kind: 'expense', amount: it.amt, pay: 'prepaid', place: `${nm} 캐시백 사용`, memo: '', cls: '이체>캐시백사용', tag: '', source: 'localpay', import_key: keyOf('lc', it.date, it.amt, it.place, it.ts + '사용') });
+      }
     } else if (f.type === 'ledger') {
       for (const it of f.items) {
         const h = it.cls ? null : H.ex.get(normPlace(it.place));
@@ -729,12 +772,28 @@ function buildCands() {
     }
   }
   const keys = new Set(state.tx.map(t => t.import_key).filter(Boolean)), multi = {};
-  state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv|pp|cb)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
+  state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv|pp|cb|lw|lc)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
   cands.forEach(c => {
-    if (keys.has(c.import_key)) { c._dup = true; return; }
+    if (keys.has(c.import_key)) { c._dup = true; c._kdup = true; return; }
     const k = `${c.tx_date}|${c.amount}|${c.kind}`; if (!c._needAmt && multi[k] > 0) { multi[k]--; c._dup = true; }
     c._on = !c._dup && !c._needAmt && !(c._cardPay && !imp.incCardPay);
   });
+  // 출처가 달라도 같은 지역화폐 결제·충전이면 한 번만 (대전사랑 앱 파일 > 카드 명세서 > 은행 순서로 남김)
+  {
+    const isPP = c => c.kind === 'expense' && c.pay === 'prepaid' && !(c.cls || '').startsWith('이체'), isTop = c => !!c._topup || (c.cls || '').startsWith('이체>선불충전');
+    const ex = { pp: {}, top: {} }, bat = { pp: {}, top: {} }, bump = (m, k, d) => { m[k] = (m[k] || 0) + d; };
+    state.tx.forEach(t => { const k = `${t.tx_date}|${t.amount}`; if (t.kind === 'expense' && t.pay === 'prepaid' && !(t.cls || '').startsWith('이체')) bump(ex.pp, k, 1); else if (t.kind === 'expense' && (t.cls || '').startsWith('이체>선불충전')) bump(ex.top, k, 1); });
+    const pri = c => c.source === 'localpay' ? 0 : c.source === 'card' ? 1 : c.source === 'bank' ? 2 : 3;
+    [...cands].sort((a, b) => pri(a) - pri(b)).forEach(c => {
+      const grp = isPP(c) ? 'pp' : isTop(c) ? 'top' : null; if (!grp) return;
+      const k = `${c.tx_date}|${c.amount}`;
+      if (c._kdup) { if (ex[grp][k] > 0) ex[grp][k]--; return; }   // 이미 같은 키로 들어간 행: 기존 기록 몫을 소진
+      if (c._dup) return;
+      if (ex[grp][k] > 0) { ex[grp][k]--; c._dup = true; c._on = false; return; }
+      if (bat[grp][k] && bat[grp][k] !== c.source) { c._dup = true; c._on = false; return; }   // 다른 출처에서 이미 채택된 같은 날짜·금액 (같은 출처끼리의 동일 금액 반복 결제는 유지)
+      bat[grp][k] = c.source;
+    });
+  }
   cands.forEach(c => { const ed = imp.ed[c.import_key]; if (!ed) return; if ('cls' in ed) c.cls = ed.cls; if (ed.amount > 0 && c._needAmt) { c.amount = ed.amount; c._needAmt = false; if (!c._dup) c._on = true; } if ('on' in ed && !c._dup && !c._needAmt) c._on = ed.on; });   // 사용자가 바꾼 값 유지
   cands.sort((a, b) => a.tx_date < b.tx_date ? -1 : a.tx_date > b.tx_date ? 1 : 0);
   imp.cands = cands;
@@ -742,7 +801,7 @@ function buildCands() {
 
 function renderImport() {
   const imp = state.imp, c = imp.cands, fresh = c.filter(x => !x._dup), on = c.filter(x => x._on);
-  const cards = imp.files.filter(f => f.type === 'card'), banks = imp.files.filter(f => f.type === 'bank'), ledgers = imp.files.filter(f => f.type === 'ledger');
+  const cards = imp.files.filter(f => f.type === 'card'), banks = imp.files.filter(f => f.type === 'bank'), ledgers = imp.files.filter(f => f.type === 'ledger'), lps = imp.files.filter(f => f.type === 'localpay');
   const newRules = impNewRules();
   const cancelled = cards.reduce((s, f) => s + f.cancelled, 0), dup = c.filter(x => x._dup).length, cardPay = c.filter(x => x._cardPay && !x._dup).length;
   const unc = on.filter(x => x.kind === 'expense' && !x.cls).length, sumOut = on.filter(x => x.kind === 'expense' && x.cls.split('>')[0] !== '카드대금').reduce((s, x) => s + x.amount, 0), sumIn = on.filter(x => x.kind === 'income').reduce((s, x) => s + x.amount, 0);
@@ -750,15 +809,15 @@ function renderImport() {
   const incOpts = sel => INCOME_CATS.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
   const needAmt = fresh.filter(x => x._needAmt).length;
   const rows = fresh.map(x => { const i = c.indexOf(x); return `<tr><td><input type="checkbox" data-imp="chk" data-i="${i}" ${x._on ? 'checked' : ''} ${x._needAmt ? 'disabled' : ''} style="width:auto"></td>
-    <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}${x._topup ? ' <span class="tag na">충전</span>' : ''}<div class="note" style="margin:0">${x.pay === 'card' || x.pay === 'prepaid' ? payLabel(x.pay) : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
+    <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}${x._topup ? ' <span class="tag na">충전</span>' : ''}${x.cls === '수입>캐시백' ? ' <span class="tag na">캐시백 적립</span>' : x.cls === '이체>캐시백사용' ? ' <span class="tag na">캐시백 사용</span>' : ''}<div class="note" style="margin:0">${x.pay === 'card' || x.pay === 'prepaid' ? payLabel(x.pay) : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
     <td class="${x.kind === 'income' ? 'pos' : ''}" style="white-space:nowrap">${x._needAmt ? `<input data-imp="amt" data-i="${i}" inputmode="numeric" placeholder="원화 금액" style="width:110px;font-size:13px;padding:4px">` : `${x.kind === 'income' ? '+' : '−'}${Math.round(x.amount).toLocaleString('ko-KR')}`}</td>
-    <td>${x._cardPay ? '' : x.kind === 'income' ? `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${incOpts(x.cls.split('>')[1])}</select>` : `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${catOpts(x.cls ? catOf(x) : '')}</select>`}</td></tr>`; }).join('');
+    <td>${x._cardPay ? '' : (x.cls.startsWith('이체') || x.cls === '수입>캐시백') ? `<span class="note" style="margin:0">${esc(x.cls.replace('>', ' › '))}</span>` : x.kind === 'income' ? `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${incOpts(x.cls.split('>')[1])}</select>` : `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${catOpts(x.cls ? catOf(x) : '')}</select>`}</td></tr>`; }).join('');
   $('#modal .sheet').innerHTML = `<h2 style="margin:0 0 6px;font-size:16px">엑셀 올리기</h2>
     <div class="note" style="margin:0 0 10px">카드 이용내역, 은행 거래내역, 지출점검시트(원본데이터)·네이버가계부 내려받기 파일을 한 번에 여러 개 올릴 수 있어요.</div>
     <input type="file" id="impFile" accept=".xls,.xlsx" multiple>
     ${imp.asset ? `<div class="banner ok" style="margin-top:12px">자산관리시트 ${esc(imp.asset.file_name)} — 월별기록 기준 ${assetLatestLabel(imp.asset)} · 저장하면 '자산' 탭에 반영됩니다</div>` : ''}
     ${imp.files.length ? `<div class="banner ${fresh.length ? 'ok' : 'warn'}" style="margin-top:12px">
-      ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}
+      ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length || ledgers.length) && lps.length ? ' · ' : ''}${lps.map(f => { const nk = f.items.length - f.unknown, wal = f.items.some(it => it.kind === '결제' || it.kind === '충전'); return `대전사랑 ${wal ? '결제/충전' : '캐시백'} ${nk}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}${(() => { const mv = f.items.filter(it => it.kind === '잔액이동').length, other = f.unknown - mv; return (mv ? ` · 잔액이동 ${mv}건 제외 (카드 교체 때 잔액 옮김 — 분석 탭에 현재 잔액을 한 번 입력하세요)` : '') + (other > 0 ? ` · 알 수 없는 유형 ${other}건 제외` : ''); })()}`; }).join(' · ')}
       → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
       ${imp.files.map((f, fi) => f.type === 'card' ? `<div class="note">${esc(f.fname)} — 결제수단: <select data-imp="fpay" data-f="${fi}" style="width:auto;font-size:13px;padding:4px"><option value="card" ${f.payAs === 'prepaid' ? '' : 'selected'}>신용카드</option><option value="prepaid" ${f.payAs === 'prepaid' ? 'selected' : ''}>지역화폐</option></select></div>` : '').join('')}
       <div class="row2" style="margin-top:10px">${cards.length ? `<div><label class="f">할부 처리</label><select data-imp="mode"><option value="split" ${imp.mode === 'split' ? 'selected' : ''}>월별로 나누기 (기존 방식)</option><option value="full" ${imp.mode === 'full' ? 'selected' : ''}>한 번에 전액</option></select></div>` : ''}
@@ -817,7 +876,7 @@ async function loadImportFiles(files) {
 const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.rules));
 handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
-  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, ...r }) => r);
+  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, ...r }) => r);
   if (!rows.length && !state.imp.asset) return;
   const parts = [];
   if (state.imp.asset) { state.asset = await backend.saveAsset(state.imp.asset); state.assetErr = ''; parts.push('자산 데이터 저장'); }
