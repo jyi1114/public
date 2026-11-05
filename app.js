@@ -112,7 +112,7 @@ function prep() { state.rulesN = Object.fromEntries(Object.entries(state.rules).
 const isSpend = t => t.kind === 'expense' && t._n !== '제외';
 const monthsOf = () => [...new Set(state.tx.map(t => t._m))].sort().reverse();
 
-function allCats() { return [...new Set([...Object.keys(state.rules).filter(k => !k.includes('>')), ...state.tx.filter(t => t.kind === 'expense').map(catOf)])].filter(c => c !== '카드대금').sort((a, b) => a.localeCompare(b, 'ko')); }
+function allCats() { return [...new Set([...Object.keys(state.rules).filter(k => !k.includes('>')).map(normCls),...state.tx.filter(t => t.kind === 'expense').map(catOf)])].filter(c => c !== '카드대금').sort((a, b) => a.localeCompare(b, 'ko')); }
 function subsOf(cat) { return [...new Set(state.tx.filter(t => t.kind === 'expense' && catOf(t) === cat && subOf(t)).map(subOf))].sort((a, b) => a.localeCompare(b, 'ko')); }
 
 // ---------- card billing cycle ----------
@@ -195,31 +195,50 @@ function viewInput() {
 }
 
 const HSORTS = { new: '날짜 최신순', old: '날짜 오래된순', high: '금액 높은순', low: '금액 낮은순' };
+// 내역 탭 대분류 필터: 수입은 '수입>종류', 지출은 대분류 이름을 키로 쓴다
+const hCatKey = t => t.kind === 'income' ? '수입>' + (subOf(t) || '기타') : catOf(t);
+const hCatLabel = k => k.startsWith('수입>') ? k.slice(3) : k;
+function hCatGroups(kind) {
+  const ko = (a, b) => hCatLabel(a).localeCompare(hCatLabel(b), 'ko'), NONSPEND = ['이체', '카드대금', '저축/보험'];
+  const expK = [...new Set(['미분류', ...state.tx.filter(isSpend).map(catOf), ...allCats().filter(c => !NONSPEND.includes(c))])].sort(ko);
+  const incK = [...new Set([...state.tx.filter(t => t.kind === 'income').map(hCatKey), ...INCOME_CATS.map(c => '수입>' + c)])].sort(ko);
+  const exK = [...new Set(state.tx.filter(t => t.kind === 'expense' && !isSpend(t)).map(catOf))].sort(ko);
+  if (kind === 'expense') return [{ title: '', keys: expK }];
+  if (kind === 'income') return [{ title: '', keys: incK }];
+  if (kind === 'excluded') return [{ title: '', keys: exK }];
+  const ex2 = exK.filter(k => !expK.includes(k));
+  return [{ title: '지출', keys: expK }, { title: '수입', keys: incK }, ...(ex2.length ? [{ title: '이체·제외', keys: ex2 }] : [])];
+}
+function hUpdateCatBtn() { const F = state.hFilter, n = F.cats.length, b = $('#hFCatBtn'); if (b) b.textContent = (n === 0 ? '대분류 전체' : n === 1 ? hCatLabel(F.cats[0]) : `${hCatLabel(F.cats[0])} 외 ${n - 1}`) + ' ▾'; }
+function hSyncCats() {   // 종류 필터에 맞게 패널 옵션을 다시 만들고, 목록에 없는 선택은 버림
+  const F = state.hFilter, groups = hCatGroups(F.kind), valid = new Set(groups.flatMap(g => g.keys)), p = $('#hCatPanel'); if (!p) return;
+  F.cats = F.cats.filter(c => valid.has(c));
+  p.innerHTML = `<button type="button" class="catClear" data-clear="1">전체 해제</button>` + groups.map(g => (g.title ? `<div class="catGrp">${esc(g.title)}</div>` : '') + g.keys.map(c => `<label class="catRow"><input type="checkbox" value="${esc(c)}" ${F.cats.includes(c) ? 'checked' : ''}><span>${esc(hCatLabel(c))}</span></label>`).join('')).join('');
+  hUpdateCatBtn();
+}
 function viewHistory() {
   const F = state.hFilter; if (!Array.isArray(F.cats)) F.cats = [];
   const months = monthsOf(); if (F.month && !months.includes(F.month)) months.unshift(F.month);
-  const cats = ['미분류', ...allCats().filter(c => c !== '미분류')]; F.cats.forEach(c => { if (!cats.includes(c)) cats.push(c); });
   view().innerHTML = `<div class="card" style="overflow:visible;position:relative;z-index:5"><input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}">
     <div class="hfsel"><span class="hflbl">필터</span><select id="hFKind">${[['', '전체'], ['expense', '지출'], ['income', '수입'], ['excluded', '이체·제외']].map(([v, l]) => `<option value="${v}" ${v === (F.kind || '') ? 'selected' : ''}>${l}</option>`).join('')}</select><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
       <div class="catWrap"><button type="button" id="hFCatBtn" class="catBtn"></button>
-        <div class="catPanel" id="hCatPanel" hidden><button type="button" class="catClear" data-clear="1">전체 해제</button>${cats.map(c => `<label class="catRow"><input type="checkbox" value="${esc(c)}" ${F.cats.includes(c) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}</div></div><button type="button" class="hreset" id="hReset">초기화</button></div></div>
+        <div class="catPanel" id="hCatPanel" hidden></div></div><button type="button" class="hreset" id="hReset">초기화</button></div></div>
     <div id="hBody"></div>`;
-  const label = () => { const n = F.cats.length; $('#hFCatBtn').textContent = (n === 0 ? '대분류 전체' : n === 1 ? F.cats[0] : `${F.cats[0]} 외 ${n - 1}`) + ' ▾'; };
   $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; state.hLimit = 200; renderHistoryBody(); });
   $('#hReset').onclick = () => { state.hFilter = { month: todayISO().slice(0, 7), cats: [], kind: null }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; viewHistory(); };
-  $('#hFKind').onchange = e => { F.kind = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
+  $('#hFKind').onchange = e => { F.kind = e.target.value || null; state.hLimit = 200; hSyncCats(); renderHistoryBody(); };
   $('#hFMonth').onchange = e => { F.month = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
   $('#hFCatBtn').onclick = () => { const p = $('#hCatPanel'); p.hidden = !p.hidden; };
   $('#hCatPanel').onchange = e => {
     const cb = e.target.closest('input[type=checkbox]'); if (!cb) return;
-    F.cats = [...$('#hCatPanel').querySelectorAll('input:checked')].map(x => x.value); state.hLimit = 200; label(); renderHistoryBody();
+    F.cats = [...$('#hCatPanel').querySelectorAll('input:checked')].map(x => x.value); state.hLimit = 200; hUpdateCatBtn(); renderHistoryBody();
   };
   $('#hCatPanel').onclick = e => {
     if (!e.target.closest('[data-clear]')) return;
-    $('#hCatPanel').querySelectorAll('input').forEach(x => x.checked = false); F.cats = []; state.hLimit = 200; label(); renderHistoryBody();
+    $('#hCatPanel').querySelectorAll('input').forEach(x => x.checked = false); F.cats = []; state.hLimit = 200; hUpdateCatBtn(); renderHistoryBody();
   };
   if (!viewHistory._doc) { viewHistory._doc = true; document.addEventListener('click', e => { const p = $('#hCatPanel'); if (p && !p.hidden && !e.target.closest('.catWrap')) p.hidden = true; }); }   // 한 번만 등록
-  label();
+  hSyncCats();
   renderHistoryBody();
 }
 function renderHistoryBody() {
@@ -227,7 +246,7 @@ function renderHistoryBody() {
   const q = state.hQuery.trim().toLowerCase(), flat = state.hSort === 'high' || state.hSort === 'low';
   const cmpDate = (a, b) => a.tx_date < b.tx_date ? 1 : a.tx_date > b.tx_date ? -1 : ((a.created_at || '') < (b.created_at || '') ? 1 : (a.created_at || '') > (b.created_at || '') ? -1 : 0);
   const kindOk = t => !F.kind || (F.kind === 'expense' ? isSpend(t) : F.kind === 'income' ? t.kind === 'income' : t.kind === 'expense' && !isSpend(t));
-  const list = state.tx.filter(t => kindOk(t) && (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(catOf(t)))
+  const list = state.tx.filter(t => kindOk(t) && (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(hCatKey(t)))
     && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
   list.sort(state.hSort === 'old' ? (a, b) => -cmpDate(a, b) : state.hSort === 'high' ? (a, b) => (b.amount - a.amount) || cmpDate(a, b) : state.hSort === 'low' ? (a, b) => (a.amount - b.amount) || cmpDate(a, b) : cmpDate);
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
@@ -242,7 +261,7 @@ function renderHistoryBody() {
     <div class="card"><div class="lhead"><span></span><select id="hSort">${Object.entries(HSORTS).map(([v, l]) => `<option value="${v}" ${v === state.hSort ? 'selected' : ''}>${l}</option>`).join('')}</select></div>${body || '<div class="note">조건에 맞는 내역이 없습니다.</div>'}${rest > 0 ? `<button class="btn sec" data-act="hMore">더 보기 (${rest}건 남음)</button>` : ''}</div>`;
   $('#hSort').onchange = e => { state.hSort = e.target.value; state.hLimit = 200; renderHistoryBody(); };
   $('#hBody').querySelectorAll('.sumk').forEach(el => el.onclick = () => {
-    F.kind = F.kind === el.dataset.kind ? null : el.dataset.kind; const ks = $('#hFKind'); if (ks) ks.value = F.kind || ''; state.hLimit = 200; renderHistoryBody();
+    F.kind = F.kind === el.dataset.kind ? null : el.dataset.kind; const ks = $('#hFKind'); if (ks) ks.value = F.kind || ''; state.hLimit = 200; hSyncCats(); renderHistoryBody();
   });
 }
 
@@ -467,7 +486,7 @@ function viewAnalysis() {
   };
   $('#cSel').onchange = e => { state.cSel = e.target.value; state.aAlign = 'cycle'; viewAnalysis(); };
   view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
-    state.hFilter = { month: state.aMonth, cats: [], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
+    state.hFilter = { month: state.aMonth, cats: ['수입>' + el.dataset.inc], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   view().querySelectorAll('[data-cat]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
