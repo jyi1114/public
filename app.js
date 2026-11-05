@@ -30,7 +30,7 @@ const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', 
 const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '대전사랑' : p === 'onnuri' ? '온누리' : '현금·계좌';
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
-const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hFilter: { month: todayISO().slice(0, 7), cats: [] }, hSort: 'new', hLimit: 200, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
+const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hFilter: { month: todayISO().slice(0, 7), cats: [], kind: null }, hSort: 'new', hLimit: 200, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
 
 // ---------- backend ----------
 function makeMock() {
@@ -200,12 +200,13 @@ function viewHistory() {
   const months = monthsOf(); if (F.month && !months.includes(F.month)) months.unshift(F.month);
   const cats = ['미분류', ...allCats().filter(c => c !== '미분류')]; F.cats.forEach(c => { if (!cats.includes(c)) cats.push(c); });
   view().innerHTML = `<div class="card" style="overflow:visible;position:relative;z-index:5"><input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}">
-    <div class="hfsel"><span class="hflbl">필터</span><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
+    <div class="hfsel"><span class="hflbl">필터</span><select id="hFKind">${[['', '전체'], ['expense', '지출'], ['income', '수입'], ['excluded', '이체·제외']].map(([v, l]) => `<option value="${v}" ${v === (F.kind || '') ? 'selected' : ''}>${l}</option>`).join('')}</select><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
       <div class="catWrap"><button type="button" id="hFCatBtn" class="catBtn"></button>
         <div class="catPanel" id="hCatPanel" hidden><button type="button" class="catClear" data-clear="1">전체 해제</button>${cats.map(c => `<label class="catRow"><input type="checkbox" value="${esc(c)}" ${F.cats.includes(c) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}</div></div></div></div>
     <div id="hBody"></div>`;
   const label = () => { const n = F.cats.length; $('#hFCatBtn').textContent = (n === 0 ? '대분류 전체' : n === 1 ? F.cats[0] : `${F.cats[0]} 외 ${n - 1}`) + ' ▾'; };
   $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; state.hLimit = 200; renderHistoryBody(); });
+  $('#hFKind').onchange = e => { F.kind = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
   $('#hFMonth').onchange = e => { F.month = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
   $('#hFCatBtn').onclick = () => { const p = $('#hCatPanel'); p.hidden = !p.hidden; };
   $('#hCatPanel').onchange = e => {
@@ -224,7 +225,8 @@ function renderHistoryBody() {
   const F = state.hFilter; if (!Array.isArray(F.cats)) F.cats = [];
   const q = state.hQuery.trim().toLowerCase(), flat = state.hSort === 'high' || state.hSort === 'low';
   const cmpDate = (a, b) => a.tx_date < b.tx_date ? 1 : a.tx_date > b.tx_date ? -1 : ((a.created_at || '') < (b.created_at || '') ? 1 : (a.created_at || '') > (b.created_at || '') ? -1 : 0);
-  const list = state.tx.filter(t => (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(catOf(t)))
+  const kindOk = t => !F.kind || (F.kind === 'expense' ? isSpend(t) : F.kind === 'income' ? t.kind === 'income' : t.kind === 'expense' && !isSpend(t));
+  const list = state.tx.filter(t => kindOk(t) && (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(catOf(t)))
     && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
   list.sort(state.hSort === 'old' ? (a, b) => -cmpDate(a, b) : state.hSort === 'high' ? (a, b) => (b.amount - a.amount) || cmpDate(a, b) : state.hSort === 'low' ? (a, b) => (a.amount - b.amount) || cmpDate(a, b) : cmpDate);
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
@@ -235,9 +237,12 @@ function renderHistoryBody() {
     if (!flat && t.tx_date !== last) { last = t.tx_date; const day = dayTot[last]; body += `<div class="dayh"><span>${mmdd(last)} (${wdOf(last)})</span><span>${day ? won(day) : ''}</span></div>`; }
     body += rowHtml(t, flat);
   });
-  $('#hBody').innerHTML = `<div class="card"><div class="sum"><div>지출<b>${won(exp)}</b></div><div>수입<b class="pos">${won(inc)}</b></div><div>건수<b>${list.length}건</b></div></div></div>
+  $('#hBody').innerHTML = `<div class="card"><div class="sum"><div class="sumk ${F.kind === 'expense' ? 'on' : ''}" data-kind="expense">지출<b>${won(exp)}</b></div><div class="sumk ${F.kind === 'income' ? 'on' : ''}" data-kind="income">수입<b class="pos">${won(inc)}</b></div><div>건수<b>${list.length}건</b></div></div></div>
     <div class="card"><div class="lhead"><span></span><select id="hSort">${Object.entries(HSORTS).map(([v, l]) => `<option value="${v}" ${v === state.hSort ? 'selected' : ''}>${l}</option>`).join('')}</select></div>${body || '<div class="note">조건에 맞는 내역이 없습니다.</div>'}${rest > 0 ? `<button class="btn sec" data-act="hMore">더 보기 (${rest}건 남음)</button>` : ''}</div>`;
   $('#hSort').onchange = e => { state.hSort = e.target.value; state.hLimit = 200; renderHistoryBody(); };
+  $('#hBody').querySelectorAll('.sumk').forEach(el => el.onclick = () => {
+    F.kind = F.kind === el.dataset.kind ? null : el.dataset.kind; const ks = $('#hFKind'); if (ks) ks.value = F.kind || ''; state.hLimit = 200; renderHistoryBody();
+  });
 }
 
 function meter(label, value, limit, right) {
@@ -245,26 +250,28 @@ function meter(label, value, limit, right) {
   return `<div class="meter"><div class="top"><span>${label}</span><span>${right}</span></div><div class="prog"><span class="${c}" style="width:${Math.min(100, r * 100).toFixed(1)}%"></span></div></div>`;
 }
 function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마다 고정 폭 칸 → 많으면 가로 스크롤
-  const SLOT = 64, H = 200, pl = 8, pr = 8, pt = 24, pb = 26, W = items.length * SLOT + pl + pr, bw = 36;
-  const maxV = Math.max(limit * 1.15, ...items.map(i => i.total), 1), y = v => pt + (H - pt - pb) * (1 - v / maxV);
+  const SLOT = 76, H = 200, pl = 8, pr = 8, pt = 24, pb = 26, W = items.length * SLOT + pl + pr, bw = 26, gap = 4;
+  const maxV = Math.max(limit * 1.15, ...items.map(i => Math.max(i.total, i.inc || 0)), 1), y = v => pt + (H - pt - pb) * (1 - v / maxV);
   const cols = [['고정', 'var(--c1)'], ['변동', 'var(--c2)'], ['비정기', 'var(--c4)']];
   let g = '';
   items.forEach((it, i) => {
-    const sx = pl + SLOT * i, x = sx + (SLOT - bw) / 2, sel = it.k === selected; let acc = 0;
+    const sx = pl + SLOT * i, xi = sx + (SLOT - 2 * bw - gap) / 2, x = xi + bw + gap, sel = it.k === selected; let acc = 0;
     g += `<g data-month="${esc(it.k)}" style="cursor:pointer"${selected && !sel ? ' opacity=".5"' : ''}>`;
     if (sel) g += `<rect x="${sx + 2}" y="2" width="${SLOT - 4}" height="${H - 4}" rx="8" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)" stroke-width="1.5"/>`;
     g += `<rect x="${sx}" y="0" width="${SLOT}" height="${H}" fill="transparent"/>`;
     cols.forEach(([k, c]) => { const v = it[k] || 0; if (v > 0) g += `<rect x="${x}" y="${y(acc + v)}" width="${bw}" height="${y(acc) - y(acc + v)}" fill="${c}"/>`; acc += v; });
-    g += `<text x="${x + bw / 2}" y="${y(it.total) - 6}" text-anchor="middle" style="fill:var(--text)">${(it.total / 10000).toFixed(0)}만</text><text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text></g>`;
+    if ((it.inc || 0) > 0) g += `<rect x="${xi}" y="${y(it.inc)}" width="${bw}" height="${y(0) - y(it.inc)}" fill="var(--inc)" fill-opacity=".75"/><text x="${xi + bw / 2}" y="${y(it.inc) - 6}" text-anchor="middle" style="fill:var(--inc);font-size:10px">${(it.inc / 10000).toFixed(0)}만</text>`;
+    if (it.total > 0) g += `<text x="${x + bw / 2}" y="${y(it.total) - 6}" text-anchor="middle" style="fill:var(--text);font-size:10px">${(it.total / 10000).toFixed(0)}만</text>`;
+    g += `<text x="${sx + SLOT / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text></g>`;
   });
   const ly = y(limit);
   g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="var(--bad)" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`;
-  return `<div id="mChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div><div class="lg"><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
+  return `<div id="mChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div><div class="lg"><span><i style="background:var(--inc)"></i>수입</span><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
 }
 
 function viewAnalysis() {
   const S = state.settings, today = todayISO(), spend = state.tx.filter(isSpend);
-  if (!spend.length) { view().innerHTML = '<div class="card"><div class="note">분석할 지출 내역이 아직 없습니다. 입력하거나 설정에서 기존 내역을 가져오세요.</div></div>'; return; }
+  if (!spend.length && !state.tx.some(t => t.kind === 'income')) { view().innerHTML = '<div class="card"><div class="note">분석할 지출 내역이 아직 없습니다. 입력하거나 설정에서 기존 내역을 가져오세요.</div></div>'; return; }
   const B = {};
   spend.forEach(t => {
     const m = B[t._m] ??= { 고정: 0, 변동: 0, 비정기: 0, total: 0, n: 0, cats: {}, items: [], first: t.tx_date, last: t.tx_date, deliv: 0, delivAmt: 0, booze: 0 };
@@ -272,7 +279,13 @@ function viewAnalysis() {
     const c = catOf(t); m.cats[c] = (m.cats[c] || 0) + t.amount; m.items.push(t);
     if (/배달/.test(t.cls)) { m.deliv++; m.delivAmt += t.amount; } if (/술\/유흥/.test(t.cls)) m.booze += t.amount;
   });
-  const incBy = {}; state.tx.filter(t => t.kind === 'income').forEach(t => incBy[t._m] = (incBy[t._m] || 0) + t.amount);
+  const incBy = {}, incM = {};
+  state.tx.filter(t => t.kind === 'income').forEach(t => {
+    incBy[t._m] = (incBy[t._m] || 0) + t.amount;
+    B[t._m] ??= { 고정: 0, 변동: 0, 비정기: 0, total: 0, n: 0, cats: {}, items: [], first: t.tx_date, last: t.tx_date, deliv: 0, delivAmt: 0, booze: 0 };   // 수입만 있는 달도 표시
+    const im = incM[t._m] ??= { total: 0, n: 0, types: {}, items: [] }, ty = subOf(t) || '기타';
+    im.total += t.amount; im.n++; im.types[ty] = (im.types[ty] || 0) + t.amount; im.items.push(t);
+  });
   const keys = Object.keys(B).sort(), curKey = today.slice(0, 7);
   const note = k => k === curKey ? ' (진행 중)' : (k === keys[0] && +B[k].first.slice(8) > 9 ? ' (일부 기간)' : '');
   if (!state.aMonth || !B[state.aMonth]) state.aMonth = [...keys].reverse().find(k => B[k].n >= 5) || keys[keys.length - 1];
@@ -294,9 +307,9 @@ function viewAnalysis() {
     ${est != null ? `<div class="note">${el}/${total}일 경과 · 이 속도면 청구액 약 <b>${won(est)}</b> (한도의 ${pct(est / S.cardLimit)})</div>` : ''}</div>`;
 
   // --- monthly ---
-  const mrows = keys.map(k => ({ k, ...B[k], label: k.slice(2) }));
+  const mrows = keys.map(k => ({ k, ...B[k], inc: incBy[k] || 0, label: k.slice(2) }));
   const sth = 'position:sticky;top:0;background:var(--card)';
-  h += `<div class="card"><h2>월별 지출 <small>카드대금·저축 제외 · 누르면 아래 월 상세가 바뀝니다</small></h2>${barChart(mrows, S.monthLimit, state.aMonth)}
+  h += `<div class="card"><h2>월별 수입지출 <small>카드대금·저축·이체 제외 · 누르면 아래 월 상세가 바뀝니다</small></h2>${barChart(mrows, S.monthLimit, state.aMonth)}
     <div style="height:10px"></div><div id="mTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">월</th><th style="${sth}">지출 계</th><th style="${sth}">수입</th><th style="${sth}">판정</th><th style="${sth}">배달</th><th style="${sth}">술·유흥</th></tr>
     ${[...mrows].reverse().map(m => { const sel = m.k === state.aMonth; return `<tr data-month="${m.k}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${m.k}<span class="note">${note(m.k)}</span></td><td><b>${won(m.total)}</b></td><td>${won(incBy[m.k] || 0)}</td><td>${tag(m.total > S.monthLimit ? '⚠ 초과' : '정상')}</td><td>${m.deliv}건</td><td>${won(m.booze)}</td></tr>`; }).join('')}</table></div>
     <div class="note">진행 중이거나 일부 기간만 있는 달은 한도 판정이 의미 없습니다.</div></div>`;
@@ -304,7 +317,18 @@ function viewAnalysis() {
   // --- month detail ---
   const cur = B[state.aMonth], cats = Object.entries(cur.cats).sort((a, b) => b[1] - a[1]);
   const irreg = cur.items.filter(t => t._n === '비정기').sort((a, b) => a.tx_date < b.tx_date ? 1 : -1), top = [...cur.items].sort((a, b) => b.amount - a.amount).slice(0, 8);
+  const im = incM[state.aMonth];
+  let incSec = '<div class="note">이번 달 수입 기록이 없습니다.</div>';
+  if (im) {
+    const itypes = Object.entries(im.types).sort((a, b) => b[1] - a[1]), itop = [...im.items].sort((a, b) => b.amount - a.amount).slice(0, 8);
+    incSec = `<div style="margin:6px 0 10px">수입 합계 <b class="pos">${won(im.total)}</b> <span class="note">${im.n}건</span></div>
+      <div class="two"><div><div class="note" style="margin:0 0 6px">종류별</div>${itypes.map(([c, v]) => `<div class="hbar go" data-inc="${esc(c)}" style="cursor:pointer"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / itypes[0][1] * 100).toFixed(1)}%;background:var(--inc)"></span></span><span class="val">${won(v)} · ${pct(v / im.total)}</span></div>`).join('')}</div>
+        <div><div class="note" style="margin:0 0 6px">큰 수입 TOP 8</div><table>${itop.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div></div>`;
+  }
   h += `<div class="card" id="mDetail"><h2>월 상세 <small><select id="aMonth" style="width:auto;font-size:13px;padding:4px 8px">${[...keys].reverse().map(k => `<option value="${k}" ${k === state.aMonth ? 'selected' : ''}>${k}${note(k)}</option>`).join('')}</select></small></h2>
+    <div class="secT">수입</div>
+    ${incSec}
+    <div class="secT">지출</div>
     ${meter('월 생활비 한도', cur.total, S.monthLimit, `<b>${won(cur.total)}</b> / ${won(S.monthLimit)}${cur.total > S.monthLimit ? ' · ' + won(cur.total - S.monthLimit) + ' 초과' : ''}`)}
     ${meter('배달 (월 한도 횟수)', cur.deliv, S.deliveryLimit, `<b>${cur.deliv}건</b> · ${won(cur.delivAmt)}`)}
     <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar go" data-cat="${esc(c)}" style="cursor:pointer"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
@@ -369,23 +393,58 @@ function viewAnalysis() {
   }
 
   // --- cycles ---
-  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제 · 행을 누르면 사용한 달의 상세로 이동</small></h2><div id="cTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">결제일</th><th style="${sth}">사용액</th><th style="${sth}">건수</th><th style="${sth}">변동</th><th style="${sth}">비정기</th><th style="${sth}">판정</th></tr>
-    ${[...ckeys].reverse().map(k => { const c = cyc[k], sel = k === nextKey; return `<tr data-month="${cycleRange(k).start.slice(0, 7)}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td></tr>`; }).join('')}</table></div>
+  const cKeysAll = [...new Set([...ckeys, nextKey])].sort().reverse();
+  if (!state.cSel || !cKeysAll.includes(state.cSel)) state.cSel = nextKey;
+  const cSel = state.cSel;
+  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제 · 행을 누르면 아래 청구주기 상세가 바뀝니다</small></h2><div id="cTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">결제일</th><th style="${sth}">사용액</th><th style="${sth}">건수</th><th style="${sth}">변동</th><th style="${sth}">비정기</th><th style="${sth}">판정</th></tr>
+    ${[...ckeys].reverse().map(k => { const c = cyc[k], up = k === nextKey, sel = k === cSel; return `<tr data-cycle="${k}" style="cursor:pointer;${sel ? 'background:var(--bg);font-weight:700' : ''}"><td style="${up ? 'box-shadow:inset 3px 0 0 var(--accent);' : ''}${sel || up ? 'font-weight:700' : ''}">${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td></tr>`; }).join('')}</table></div>
     <div class="note">카드 한도 ${won(S.cardLimit)} (설정에서 변경)</div></div>`;
+
+  // --- cycle detail ---
+  {
+    const cr = cycleRange(cSel), dd = x => x.replace(/-/g, '.');
+    const ct = spend.filter(t => t.pay === 'card' && cycleKey(t.tx_date) === cSel).sort((a, b) => a.tx_date < b.tx_date ? -1 : a.tx_date > b.tx_date ? 1 : ((a.created_at || '') < (b.created_at || '') ? -1 : 1));
+    const cuse = ct.reduce((s, t) => s + t.amount, 0), cdl = ct.filter(t => /배달/.test(t.cls)), cdlAmt = cdl.reduce((s, t) => s + t.amount, 0);
+    const ccat = {}; ct.forEach(t => { const c = catOf(t); ccat[c] = (ccat[c] || 0) + t.amount; });
+    const ccs = Object.entries(ccat).sort((a, b) => b[1] - a[1]), ctop = [...ct].sort((a, b) => b.amount - a.amount).slice(0, 8);
+    const cirr2 = ct.filter(t => t._n === '비정기').sort((a, b) => a.tx_date < b.tx_date ? 1 : -1), cirrAmt = cirr2.reduce((s, t) => s + t.amount, 0);
+    h += `<div class="card" id="cDetail"><h2>청구주기 상세 <small><select id="cSel" style="width:auto;font-size:13px;padding:4px 8px">${cKeysAll.map(k => { const rg = cycleRange(k); return `<option value="${k}" ${k === cSel ? 'selected' : ''}>${dd(rg.pay)} 결제 (${rg.start.slice(5).replace('-', '.')}~${rg.end.slice(5).replace('-', '.')})</option>`; }).join('')}</select></small></h2>
+      <div class="note" style="margin:0 0 6px">사용 기간 ${dd(cr.start)} ~ ${dd(cr.end)} · 결제일 ${dd(cr.pay)}</div>
+      ${meter('청구 예정액 / 카드 한도', cuse, S.cardLimit, `<b>${won(cuse)}</b> / ${won(S.cardLimit)} ${tag(cuse > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
+      ${meter('배달 (월 한도 횟수)', cdl.length, S.deliveryLimit, `<b>${cdl.length}건</b> · ${won(cdlAmt)}`)}
+      ${ct.length ? `<div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${ccs.map(([c, v]) => `<div class="hbar"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / ccs[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cuse)}</span></div>`).join('')}</div>
+        <div><div class="note" style="margin:0 0 6px">큰 지출 TOP 8</div><table>${ctop.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div></div>
+      <div class="note" style="margin:14px 0 6px">비정기 ${cirr2.length}건 · ${won(cirrAmt)}</div>
+      ${cirr2.length ? `<table>${cirr2.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${esc(t.cls)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table>` : '<div class="note">없음</div>'}
+      <div class="note" style="margin:14px 0 6px">전체 내역 (날짜순)</div>
+      <div id="dListWrap" data-key="${cSel}" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">날짜</th><th style="${sth}">사용처</th><th style="${sth}">분류</th><th style="${sth}">금액</th></tr>
+        ${ct.map(t => `<tr><td>${mmdd(t.tx_date)}</td><td style="text-align:left">${esc(t.place || t.memo)}</td><td style="text-align:left">${esc((t.cls || '미분류').replace('>', ' › '))}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div>
+      <div class="note">합계 ${won(cuse)} · ${ct.length}건 · 첫 거래 ${mmdd(ct[0].tx_date)} · 마지막 거래 ${mmdd(ct[ct.length - 1].tx_date)}</div>` : '<div class="note">이 청구주기에 카드 사용 내역이 없습니다.</div>'}</div>`;
+  }
   const cw0 = $('#mChartWrap'), tw0 = $('#mTableWrap'), kw0 = $('#cTableWrap');   // 다시 그리기 전 스크롤 위치 저장
-  if (cw0 && tw0 && kw0) state.aScroll = { l: cw0.scrollLeft, t: tw0.scrollTop, c: kw0.scrollTop, right: cw0.scrollLeft + cw0.clientWidth >= cw0.scrollWidth - 2 };
+  const dw0 = $('#dListWrap');
+  if (cw0 && tw0 && kw0) state.aScroll = { l: cw0.scrollLeft, t: tw0.scrollTop, c: kw0.scrollTop, d: dw0 ? dw0.scrollTop : 0, dk: dw0 ? dw0.dataset.key : '', right: cw0.scrollLeft + cw0.clientWidth >= cw0.scrollWidth - 2 };
   view().innerHTML = h;
   const cw = $('#mChartWrap'), tw = $('#mTableWrap'), kw = $('#cTableWrap');
-  if (state.aScroll) { cw.scrollLeft = state.aScroll.right ? cw.scrollWidth : state.aScroll.l; tw.scrollTop = state.aScroll.t; kw.scrollTop = state.aScroll.c || 0; }   // 오른쪽 끝을 보고 있었다면 새 달이 생겨도 계속 오른쪽 끝
+  if (state.aScroll) { cw.scrollLeft = state.aScroll.right ? cw.scrollWidth : state.aScroll.l; tw.scrollTop = state.aScroll.t; kw.scrollTop = state.aScroll.c || 0; const dw = $('#dListWrap'); if (dw) dw.scrollTop = dw.dataset.key === state.aScroll.dk ? (state.aScroll.d || 0) : 0; }   // 오른쪽 끝을 보고 있었다면 새 달이 생겨도 계속 오른쪽 끝
   else { cw.scrollLeft = cw.scrollWidth; state.aScroll = { l: cw.scrollLeft, t: 0, c: 0, right: true }; }   // 처음에는 최근 달이 보이도록 오른쪽 끝으로
   const pick = e => {
     const el = e.target.closest('[data-month]'); if (!el || !B[el.dataset.month]) return;
     state.aMonth = el.dataset.month; viewAnalysis();
     const d = $('#mDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
-  cw.onclick = pick; tw.onclick = pick; kw.onclick = pick;
+  cw.onclick = pick; tw.onclick = pick;
+  kw.onclick = e => {
+    const el = e.target.closest('[data-cycle]'); if (!el) return;
+    state.cSel = el.dataset.cycle; viewAnalysis();
+    const d = $('#cDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+  $('#cSel').onchange = e => { state.cSel = e.target.value; viewAnalysis(); };
+  view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
+    state.hFilter = { month: state.aMonth, cats: [], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
+  });
   view().querySelectorAll('[data-cat]').forEach(el => el.onclick = () => {
-    state.hFilter = { month: state.aMonth, cats: [el.dataset.cat] }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
+    state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; viewAnalysis(); };
 }
