@@ -30,7 +30,7 @@ const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', 
 const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '대전사랑' : p === 'onnuri' ? '온누리' : '현금·계좌';
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
-const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hMonth: null, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
+const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hFilter: { month: null, cat: null }, hSort: 'new', hLimit: 200, hAdd: false, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
 
 // ---------- backend ----------
 function makeMock() {
@@ -175,10 +175,10 @@ function wireForm(p) {
 
 // ---------- views ----------
 const view = () => $('#view');
-function rowHtml(t) {
+function rowHtml(t, showDate) {
   const inc = t.kind === 'income', ex = t._n === '제외';
   return `<div class="item ${ex ? 'ex' : ''}" data-act="edit" data-id="${t.id}"><div class="l"><div class="t">${esc(t.place || t.memo || (inc ? '수입' : '(사용처 없음)'))}</div>
-    <div class="s">${esc(t.cls.replace('>', ' › ') || '미분류')} · ${inc ? '' : payLabel(t.pay)}${t.tag ? ' · ' + esc(t.tag) : ''}${ex ? ' · 제외' : ''}</div></div>
+    <div class="s">${showDate ? `<span class="d">${mmdd(t.tx_date)}</span>` : ''}${esc(t.cls.replace('>', ' › ') || '미분류')} · ${inc ? '' : payLabel(t.pay)}${t.tag ? ' · ' + esc(t.tag) : ''}${ex ? ' · 제외' : ''}</div></div>
     <div class="a ${inc ? 'pos' : ''}">${inc ? '+' : '−'}${Math.round(t.amount).toLocaleString('ko-KR')}</div></div>`;
 }
 
@@ -190,29 +190,57 @@ function viewInput() {
     <div class="sum"><div>지출<b>${won(exp)}</b></div><div>수입<b class="pos">${won(inc)}</b></div><div>한도 대비<b>${pct(exp / state.settings.monthLimit)}</b></div></div></div>
     <div class="card"><h2>새 내역</h2>${formHtml('f_')}<button class="btn" data-act="save">저장</button></div>
     <div class="card"><h2>엑셀 올리기</h2><div class="note" style="margin:0 0 10px">카드 이용내역, 은행 거래내역, 지출점검시트(원본데이터)를 올리면 자동으로 입력됩니다.</div><button class="btn sec" data-act="openImport" style="margin:0">엑셀 파일 선택</button></div>
-    <div class="card"><h2>최근 입력 <small>눌러서 수정</small></h2>${recent.length ? recent.map(rowHtml).join('') : '<div class="note">아직 입력한 내역이 없습니다.</div>'}</div>`;
+    <div class="card"><h2>최근 입력 <small>눌러서 수정</small></h2>${recent.length ? recent.map(t => rowHtml(t)).join('') : '<div class="note">아직 입력한 내역이 없습니다.</div>'}</div>`;
   wireForm('f_');
 }
 
+const HSORTS = { new: '날짜 최신순', old: '날짜 오래된순', high: '금액 높은순', low: '금액 낮은순' };
 function viewHistory() {
-  const months = monthsOf(), cur = todayISO().slice(0, 7);
-  if (!months.includes(cur)) months.unshift(cur);
-  if (!state.hMonth) state.hMonth = cur;
-  view().innerHTML = `<div class="card"><div class="row2"><select id="hMonth">${months.map(m => `<option value="${m}" ${m === state.hMonth ? 'selected' : ''}>${m}</option>`).join('')}</select>
-    <input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}"></div></div>
+  const F = state.hFilter ??= { month: null, cat: null };
+  const months = monthsOf(); if (F.month && !months.includes(F.month)) months.unshift(F.month);
+  const cats = ['미분류', ...allCats().filter(c => c !== '미분류')]; if (F.cat && !cats.includes(F.cat)) cats.push(F.cat);
+  view().innerHTML = `<div class="card"><input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}">
+    <div class="hctl"><select id="hSort">${Object.entries(HSORTS).map(([v, l]) => `<option value="${v}" ${v === state.hSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <div class="hchips" id="hChips"></div></div>
+    <div class="hfsel" id="hFSel" ${state.hAdd ? '' : 'hidden'}><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
+      <select id="hFCat"><option value="">대분류 전체</option>${cats.map(c => `<option value="${esc(c)}" ${c === F.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div></div>
     <div id="hBody"></div>`;
-  $('#hMonth').onchange = e => { state.hMonth = e.target.value; renderHistoryBody(); };
-  $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; renderHistoryBody(); });
+  const refresh = () => { state.hLimit = 200; renderHistoryChips(); renderHistoryBody(); };
+  $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; state.hLimit = 200; renderHistoryBody(); });
+  $('#hSort').onchange = e => { state.hSort = e.target.value; state.hLimit = 200; renderHistoryBody(); };
+  $('#hFMonth').onchange = e => { F.month = e.target.value || null; refresh(); };
+  $('#hFCat').onchange = e => { F.cat = e.target.value || null; refresh(); };
+  $('#hChips').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.rm === 'month') { F.month = null; $('#hFMonth').value = ''; refresh(); }
+    else if (b.dataset.rm === 'cat') { F.cat = null; $('#hFCat').value = ''; refresh(); }
+    else if (b.dataset.add) { state.hAdd = !state.hAdd; $('#hFSel').hidden = !state.hAdd; renderHistoryChips(); }
+  };
+  renderHistoryChips();
   renderHistoryBody();
 }
+function renderHistoryChips() {
+  const F = state.hFilter, el = $('#hChips'); if (!el) return;
+  el.innerHTML = (F.month ? `<button type="button" class="hchip" data-rm="month">${esc(F.month)} ✕</button>` : '')
+    + (F.cat ? `<button type="button" class="hchip" data-rm="cat">${esc(F.cat)} ✕</button>` : '')
+    + `<button type="button" class="hchip add" data-add="1">${state.hAdd ? '− 필터' : '＋ 필터'}</button>`;
+}
 function renderHistoryBody() {
-  const q = state.hQuery.trim().toLowerCase();
-  const list = state.tx.filter(t => t._m === state.hMonth && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
+  const F = state.hFilter, q = state.hQuery.trim().toLowerCase(), flat = state.hSort === 'high' || state.hSort === 'low';
+  const cmpDate = (a, b) => a.tx_date < b.tx_date ? 1 : a.tx_date > b.tx_date ? -1 : ((a.created_at || '') < (b.created_at || '') ? 1 : (a.created_at || '') > (b.created_at || '') ? -1 : 0);
+  const list = state.tx.filter(t => (!F.month || t._m === F.month) && (!F.cat || catOf(t) === F.cat)
+    && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
+  list.sort(state.hSort === 'old' ? (a, b) => -cmpDate(a, b) : state.hSort === 'high' ? (a, b) => (b.amount - a.amount) || cmpDate(a, b) : state.hSort === 'low' ? (a, b) => (a.amount - b.amount) || cmpDate(a, b) : cmpDate);
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
+  const dayTot = {}; if (!flat) list.forEach(t => { if (isSpend(t)) dayTot[t.tx_date] = (dayTot[t.tx_date] || 0) + t.amount; });
+  const shown = list.slice(0, state.hLimit), rest = list.length - shown.length;
   let body = '', last = '';
-  list.forEach(t => { if (t.tx_date !== last) { last = t.tx_date; const day = list.filter(x => x.tx_date === last && isSpend(x)).reduce((s, x) => s + x.amount, 0); body += `<div class="dayh"><span>${mmdd(last)} (${wdOf(last)})</span><span>${day ? won(day) : ''}</span></div>`; } body += rowHtml(t); });
+  shown.forEach(t => {
+    if (!flat && t.tx_date !== last) { last = t.tx_date; const day = dayTot[last]; body += `<div class="dayh"><span>${mmdd(last)} (${wdOf(last)})</span><span>${day ? won(day) : ''}</span></div>`; }
+    body += rowHtml(t, flat);
+  });
   $('#hBody').innerHTML = `<div class="card"><div class="sum"><div>지출<b>${won(exp)}</b></div><div>수입<b class="pos">${won(inc)}</b></div><div>건수<b>${list.length}건</b></div></div></div>
-    <div class="card">${body || '<div class="note">내역이 없습니다.</div>'}</div>`;
+    <div class="card">${body || '<div class="note">조건에 맞는 내역이 없습니다.</div>'}${rest > 0 ? `<button class="btn sec" data-act="hMore">더 보기 (${rest}건 남음)</button>` : ''}</div>`;
 }
 
 function meter(label, value, limit, right) {
@@ -282,7 +310,7 @@ function viewAnalysis() {
   h += `<div class="card" id="mDetail"><h2>월 상세 <small><select id="aMonth" style="width:auto;font-size:13px;padding:4px 8px">${[...keys].reverse().map(k => `<option value="${k}" ${k === state.aMonth ? 'selected' : ''}>${k}${note(k)}</option>`).join('')}</select></small></h2>
     ${meter('월 생활비 한도', cur.total, S.monthLimit, `<b>${won(cur.total)}</b> / ${won(S.monthLimit)}${cur.total > S.monthLimit ? ' · ' + won(cur.total - S.monthLimit) + ' 초과' : ''}`)}
     ${meter('배달 (월 한도 횟수)', cur.deliv, S.deliveryLimit, `<b>${cur.deliv}건</b> · ${won(cur.delivAmt)}`)}
-    <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
+    <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar go" data-cat="${esc(c)}" style="cursor:pointer"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
       <div><div class="note" style="margin:0 0 6px">큰 지출 TOP 8</div><table>${top.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div></div>
     <div class="note" style="margin:14px 0 6px">비정기 ${irreg.length}건 · ${won(cur['비정기'])}</div>
     ${irreg.length ? `<table>${irreg.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${esc(t.cls)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table>` : '<div class="note">없음</div>'}
@@ -314,8 +342,8 @@ function viewAnalysis() {
     djHtml = `<table><tr><th></th><th>충전</th><th>사용(전액)</th><th>캐시백 적립</th><th>캐시백 사용</th></tr>
       <tr><td>${curKey.replace('-', '.')}</td><td>${won(Am.topups)}</td><td>${won(Am.spentFull)}</td><td>${won(Am.cbEarned)}</td><td>${won(Am.cbUsed)}</td></tr>
       <tr><td>전체</td><td>${won(A.topups)}</td><td>${won(A.spentFull)}</td><td>${won(A.cbEarned)}</td><td>${won(A.cbUsed)}</td></tr></table>${snapHtml}
-      <div class="row2" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="ppDate" type="date" value="${today}"></div><div><label class="f">충전 잔액(원)</label><input id="ppCharge" inputmode="numeric" placeholder="0"></div></div>
-      <label class="f">캐시백 잔액(원)</label><input id="ppCb" inputmode="numeric" placeholder="0">
+      <div class="row2 snapRow snap3" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="ppDate" type="date" value="${today}"></div><div><label class="f">충전 잔액(원)</label><input id="ppCharge" inputmode="numeric" placeholder="0"></div>
+      <div><label class="f">캐시백 잔액(원)</label><input id="ppCb" inputmode="numeric" placeholder="0"></div></div>
       <button class="btn sec" data-act="saveSnap">잔액 기록</button>`;
   }
   // --- 온누리상품권 ---
@@ -333,7 +361,7 @@ function viewAnalysis() {
     onHtml = `<table><tr><th></th><th>충전(상품권 금액)</th><th>실제 낸 돈</th><th>할인 혜택</th><th>사용</th></tr>
       <tr><td>${curKey.replace('-', '.')}</td><td>${won(Am.charges)}</td><td>${won(Am.paid)}</td><td>${won(Am.discount)}</td><td>${won(Am.spent)}</td></tr>
       <tr><td>전체</td><td>${won(A.charges)}</td><td>${won(A.paid)}</td><td>${won(A.discount)}</td><td>${won(A.spent)}</td></tr></table>${snapHtml}
-      <div class="row2" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="onDate" type="date" value="${today}"></div><div><label class="f">잔액(원)</label><input id="onBal" inputmode="numeric" placeholder="0"></div></div>
+      <div class="row2 snapRow" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="onDate" type="date" value="${today}"></div><div><label class="f">잔액(원)</label><input id="onBal" inputmode="numeric" placeholder="0"></div></div>
       <button class="btn sec" data-act="saveOnnuriSnap">잔액 기록</button>`;
   }
   if (ppTx.length || snaps.length || onTx.length || onSnaps.length) {
@@ -344,8 +372,8 @@ function viewAnalysis() {
   }
 
   // --- cycles ---
-  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제</small></h2><div id="cTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">결제일</th><th style="${sth}">사용액</th><th style="${sth}">건수</th><th style="${sth}">변동</th><th style="${sth}">비정기</th><th style="${sth}">판정</th></tr>
-    ${[...ckeys].reverse().map(k => { const c = cyc[k], sel = k === nextKey; return `<tr style="${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td></tr>`; }).join('')}</table></div>
+  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제 · 행을 누르면 사용한 달의 상세로 이동</small></h2><div id="cTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">결제일</th><th style="${sth}">사용액</th><th style="${sth}">건수</th><th style="${sth}">변동</th><th style="${sth}">비정기</th><th style="${sth}">판정</th></tr>
+    ${[...ckeys].reverse().map(k => { const c = cyc[k], sel = k === nextKey; return `<tr data-month="${cycleRange(k).start.slice(0, 7)}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td></tr>`; }).join('')}</table></div>
     <div class="note">카드 한도 ${won(S.cardLimit)} (설정에서 변경)</div></div>`;
   const cw0 = $('#mChartWrap'), tw0 = $('#mTableWrap'), kw0 = $('#cTableWrap');   // 다시 그리기 전 스크롤 위치 저장
   if (cw0 && tw0 && kw0) state.aScroll = { l: cw0.scrollLeft, t: tw0.scrollTop, c: kw0.scrollTop, right: cw0.scrollLeft + cw0.clientWidth >= cw0.scrollWidth - 2 };
@@ -358,7 +386,10 @@ function viewAnalysis() {
     state.aMonth = el.dataset.month; viewAnalysis();
     const d = $('#mDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
-  cw.onclick = pick; tw.onclick = pick;
+  cw.onclick = pick; tw.onclick = pick; kw.onclick = pick;
+  view().querySelectorAll('[data-cat]').forEach(el => el.onclick = () => {
+    state.hFilter = { month: state.aMonth, cat: el.dataset.cat }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
+  });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; viewAnalysis(); };
 }
 
@@ -608,6 +639,7 @@ const handlers = {
     await backend.deleteTx(el.dataset.id); state.tx = state.tx.filter(x => x.id !== el.dataset.id); prep(); closeModal(); toast('삭제됨'); render();
   }),
   closeModal: () => closeModal(),
+  hMore: () => { state.hLimit = (state.hLimit || 200) + 200; renderHistoryBody(); },
   saveSettings: () => run(async () => {
     const n = id => parseInt($(id).value.replace(/\D/g, ''), 10);
     const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), cycleStart: n('#sCs'), payDay: n('#sPd') };
