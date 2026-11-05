@@ -23,11 +23,11 @@ const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</spa
 const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, cycleStart: 9, payDay: 21 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
   '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
-  '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '경조사/회비': '비정기', '의복/미용': '변동' };
-const CAT_ALIAS = { '의류/미용': '의복/미용' };
+  '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
+const CAT_ALIAS = { '의류/미용': '의복/미용', '경조사/회비': '경조사' };
 const normCls = cls => { if (!cls) return ''; const s = String(cls), i = s.indexOf('>'), head = i < 0 ? s : s.slice(0, i); return head in CAT_ALIAS ? CAT_ALIAS[head] + (i < 0 ? '' : s.slice(i)) : s; };
-const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', '캐시백', '기타수입'];
-const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '지역화폐' : '현금·계좌';
+const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', '캐시백', '상품권할인', '기타수입'];
+const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '대전사랑' : p === 'onnuri' ? '온누리' : '현금·계좌';
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
 const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hMonth: null, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
@@ -131,8 +131,8 @@ function formHtml(p, t) {
   return `<div data-form="${p}">
     <div class="seg" data-grp="kind"><button type="button" data-val="expense" class="${inc ? '' : 'on'}">지출</button><button type="button" data-val="income" class="${inc ? 'on' : ''}">수입</button></div>
     <label class="f">금액</label><input class="amt" id="${p}amount" inputmode="numeric" placeholder="0" value="${t.amount ? Number(t.amount).toLocaleString('ko-KR') : ''}" autocomplete="off">
-    <div class="row2"><div><label class="f">날짜</label><input id="${p}date" type="date" value="${esc(t.tx_date)}"></div>
-      <div id="${p}payWrap" ${inc ? 'hidden' : ''}><label class="f">결제수단</label><div class="seg" data-grp="pay"><button type="button" data-val="card" class="${t.pay === 'card' ? 'on' : ''}">카드</button><button type="button" data-val="cash" class="${t.pay === 'cash' ? 'on' : ''}">현금·계좌</button><button type="button" data-val="prepaid" class="${t.pay === 'prepaid' ? 'on' : ''}">지역화폐</button></div></div></div>
+    <div><label class="f">날짜</label><input id="${p}date" type="date" value="${esc(t.tx_date)}"></div>
+      <div id="${p}payWrap" ${inc ? 'hidden' : ''}><label class="f">결제수단</label><div class="seg" data-grp="pay"><button type="button" data-val="card" style="font-size:14px;padding:10px 4px;white-space:nowrap" class="${t.pay === 'card' ? 'on' : ''}">카드</button><button type="button" data-val="cash" style="font-size:14px;padding:10px 4px;white-space:nowrap" class="${t.pay === 'cash' ? 'on' : ''}">현금·계좌</button><button type="button" data-val="prepaid" style="font-size:14px;padding:10px 4px;white-space:nowrap" class="${t.pay === 'prepaid' ? 'on' : ''}">대전사랑</button><button type="button" data-val="onnuri" style="font-size:14px;padding:10px 4px;white-space:nowrap" class="${t.pay === 'onnuri' ? 'on' : ''}">온누리</button></div></div>
     <div id="${p}expWrap" ${inc ? 'hidden' : ''}>
       <label class="f">사용처</label><input id="${p}place" list="${p}places" value="${esc(t.place)}" autocomplete="off" placeholder="예: 스타벅스">
       <datalist id="${p}places">${[...new Set(state.tx.map(x => x.place).filter(Boolean))].slice(0, 300).map(x => `<option value="${esc(x)}">`).join('')}</datalist>
@@ -297,8 +297,9 @@ function viewAnalysis() {
   const clsOf = t => t.cls || '', isTopT = t => t.kind === 'expense' && clsOf(t).startsWith('이체>선불충전'), isCbUse = t => clsOf(t) === '이체>캐시백사용', isCbEarn = t => t.kind === 'income' && clsOf(t) === '수입>캐시백';
   const isPPSpend = t => t.kind === 'expense' && t.pay === 'prepaid' && !clsOf(t).startsWith('이체');
   const ppTx = state.tx.filter(t => isTopT(t) || isCbUse(t) || isCbEarn(t) || isPPSpend(t));
-  if (ppTx.length || snaps.length) {
-    const sumOf = (l, f) => l.filter(f).reduce((s, t) => s + t.amount, 0);
+  const sumOf = (l, f) => l.filter(f).reduce((s, t) => s + t.amount, 0);
+  let djHtml = '', onHtml = '';
+  {
     const agg = l => { const topups = sumOf(l, isTopT), spentFull = sumOf(l, isPPSpend), cbEarned = sumOf(l, isCbEarn), cbUsed = sumOf(l, isCbUse); return { topups, spentFull, cbEarned, cbUsed, chargeDelta: topups - (spentFull - cbUsed), cbDelta: cbEarned - cbUsed }; };
     const A = agg(ppTx), Am = agg(ppTx.filter(t => t._m === curKey)), S0 = snaps.length ? snaps[snaps.length - 1] : null, sg = v => (v > 0 ? '+' : v < 0 ? '−' : '') + won(Math.abs(v));
     let snapHtml = `<div class="note" style="margin:8px 0 0">받은 캐시백 합계(기록 기간): <b>${won(A.cbEarned)}</b></div>`;
@@ -310,13 +311,36 @@ function viewAnalysis() {
     } else {
       snapHtml += `<div class="note">기록 기간 순증감: 충전 잔액 ${sg(A.chargeDelta)}, 캐시백 잔액 ${sg(A.cbDelta)}. 앱에 보이는 현재 잔액을 한 번 입력하면 이후 잔액을 추정해요.</div>`;
     }
-    h += `<div class="card"><h2>대전사랑카드 <small>지역화폐 · 충전은 지출이 아니라 이체</small></h2>
-      <table><tr><th></th><th>충전</th><th>사용(전액)</th><th>캐시백 적립</th><th>캐시백 사용</th></tr>
+    djHtml = `<table><tr><th></th><th>충전</th><th>사용(전액)</th><th>캐시백 적립</th><th>캐시백 사용</th></tr>
       <tr><td>${curKey.replace('-', '.')}</td><td>${won(Am.topups)}</td><td>${won(Am.spentFull)}</td><td>${won(Am.cbEarned)}</td><td>${won(Am.cbUsed)}</td></tr>
       <tr><td>전체</td><td>${won(A.topups)}</td><td>${won(A.spentFull)}</td><td>${won(A.cbEarned)}</td><td>${won(A.cbUsed)}</td></tr></table>${snapHtml}
       <div class="row2" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="ppDate" type="date" value="${today}"></div><div><label class="f">충전 잔액(원)</label><input id="ppCharge" inputmode="numeric" placeholder="0"></div></div>
       <label class="f">캐시백 잔액(원)</label><input id="ppCb" inputmode="numeric" placeholder="0">
-      <button class="btn sec" data-act="saveSnap">잔액 기록</button></div>`;
+      <button class="btn sec" data-act="saveSnap">잔액 기록</button>`;
+  }
+  // --- 온누리상품권 ---
+  const onSnaps = [...(S.onnuriSnaps || [])].sort((a, b) => a.date < b.date ? -1 : 1);
+  const isOnFace = t => t.kind === 'expense' && clsOf(t).startsWith('이체>온누리충전'), isOnDisc = t => t.kind === 'income' && clsOf(t) === '수입>상품권할인', isOnSpend = t => t.kind === 'expense' && t.pay === 'onnuri' && !clsOf(t).startsWith('이체');
+  const isOnPaid = t => t.kind === 'expense' && clsOf(t).startsWith('이체>온누리결제');   // 은행에서 실제로 낸 돈 (잔액 계산에는 쓰지 않음)
+  const onTx = state.tx.filter(t => isOnFace(t) || isOnDisc(t) || isOnSpend(t) || isOnPaid(t));
+  {
+    const aggO = l => { const charges = sumOf(l, isOnFace), discount = sumOf(l, isOnDisc), spent = sumOf(l, isOnSpend), paid = sumOf(l, isOnPaid); return { charges, paid, discount, spent, delta: charges - spent }; };
+    const A = aggO(onTx), Am = aggO(onTx.filter(t => t._m === curKey)), S0 = onSnaps.length ? onSnaps[onSnaps.length - 1] : null;
+    let snapHtml = '';
+    if (S0) snapHtml = `<div class="note" style="margin:8px 0 0">최근 확인 잔액 (${S0.date.replace(/-/g, '.')}): ${won(S0.balance)}</div>
+      <div style="margin-top:6px">추정 잔액 (오늘): <b>${won(S0.balance + aggO(onTx.filter(t => t.tx_date > S0.date)).delta)}</b></div><div class="note">앱에 보이는 잔액과 다르면 빠진 기록이 있을 수 있어요.</div>`;
+    else snapHtml = `<div class="note" style="margin:8px 0 0">기록 기간 순증감: 잔액 ${A.delta > 0 ? '+' : A.delta < 0 ? '−' : ''}${won(Math.abs(A.delta))}. 앱에 보이는 현재 잔액을 한 번 입력하면 이후 잔액을 추정해요.</div>`;
+    onHtml = `<table><tr><th></th><th>충전(상품권 금액)</th><th>실제 낸 돈</th><th>할인 혜택</th><th>사용</th></tr>
+      <tr><td>${curKey.replace('-', '.')}</td><td>${won(Am.charges)}</td><td>${won(Am.paid)}</td><td>${won(Am.discount)}</td><td>${won(Am.spent)}</td></tr>
+      <tr><td>전체</td><td>${won(A.charges)}</td><td>${won(A.paid)}</td><td>${won(A.discount)}</td><td>${won(A.spent)}</td></tr></table>${snapHtml}
+      <div class="row2" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="onDate" type="date" value="${today}"></div><div><label class="f">잔액(원)</label><input id="onBal" inputmode="numeric" placeholder="0"></div></div>
+      <button class="btn sec" data-act="saveOnnuriSnap">잔액 기록</button>`;
+  }
+  if (ppTx.length || snaps.length || onTx.length || onSnaps.length) {
+    const tb = state.ppTab === 'on' ? 'on' : 'dj';
+    h += `<div class="card"><h2>지역화폐 <small>충전은 지출이 아니라 이체</small></h2>
+      <div class="seg" style="margin-bottom:10px"><button type="button" data-act="ppTab" data-v="dj" class="${tb === 'dj' ? 'on' : ''}">대전사랑카드</button><button type="button" data-act="ppTab" data-v="on" class="${tb === 'on' ? 'on' : ''}">온누리상품권</button></div>
+      ${tb === 'dj' ? djHtml : onHtml}</div>`;
   }
 
   // --- cycles ---
@@ -591,6 +615,15 @@ const handlers = {
     const merged = { ...state.settings, ...s };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('설정 저장됨');
   }),
+  ppTab: el => { state.ppTab = el.dataset.v; viewAnalysis(); },
+  saveOnnuriSnap: () => run(async () => {
+    const date = $('#onDate').value, v = $('#onBal').value.replace(/\D/g, ''), balance = v === '' ? NaN : parseInt(v, 10);
+    if (!date) throw new Error('날짜를 입력하세요');
+    if (isNaN(balance)) throw new Error('잔액을 숫자로 입력하세요');
+    const onnuriSnaps = [...(state.settings.onnuriSnaps || []).filter(s => s.date !== date), { date, balance }].sort((a, b) => a.date < b.date ? -1 : 1).slice(-24);
+    const merged = { ...state.settings, onnuriSnaps };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('잔액 기록됨'); viewAnalysis();
+  }),
   saveSnap: () => run(async () => {
     const num = id => { const v = $(id).value.replace(/\D/g, ''); return v === '' ? NaN : parseInt(v, 10); };
     const date = $('#ppDate').value, charge = num('#ppCharge'), cashback = num('#ppCb');
@@ -713,8 +746,30 @@ function parseLocalPay(aoa, hi, fname) {   // 대전사랑카드 앱 내보내�
   const unknown = items.filter(it => !['결제', '충전', '캐시백 적립', '캐시백 사용'].includes(it.kind)).length;
   return { type: 'localpay', fname, items, cancelled, unknown };
 }
+const dateYmd8 = v => { const m = /^(\d{4})(\d{2})(\d{2})$/.exec(String(v ?? '').trim()); return m ? `${m[1]}-${m[2]}-${m[3]}` : cellDate(v); };   // 20261025 형식도 인식
+const timeHms = v => String(v ?? '').trim().replace(/\.0+$/, '').replace(/[:\s]/g, '').padStart(6, '0');
+function parseOnnuri(aoa, hi, fname, type) {   // 디지털 온누리 결제내역(onnuripay) / 충전내역(onnuricharge)
+  const col = colMap(aoa[hi]), g = (r, k) => (k in col ? r[col[k]] : '');
+  const items = [], cancels = []; let cancelled = 0;
+  for (const r of aoa.slice(hi + 1)) {
+    const date = dateYmd8(g(r, '거래일자')); if (!date) continue;
+    const ts = timeHms(g(r, '거래시각')), amount = Math.round(Math.abs(toNum(g(r, '거래금액')))), st = cellStr(g(r, '거래상태')), ty = cellStr(g(r, '거래유형'));
+    const place = sp1(g(r, type === 'onnuripay' ? '가맹점 및 상품권명' : '상품권명'));
+    if (!amount) continue;
+    if (st.includes('취소') || ty.includes('취소')) { if (type === 'onnuripay') cancels.push({ date, place, amount, ts }); continue; }
+    if (type === 'onnuricharge' ? !st.includes('완료') : (st && !st.includes('완료'))) continue;
+    items.push({ date, ts, place, amount });
+  }
+  for (const c of cancels) {   // 취소 행은 같은 날짜·가맹점·금액의 결제완료 행 하나와 함께 제외
+    let idx = -1; for (let i = items.length - 1; i >= 0; i--) { const it = items[i]; if (it.date === c.date && it.place === c.place && it.amount === c.amount && it.ts <= c.ts) { idx = i; break; } }
+    if (idx < 0) for (let i = items.length - 1; i >= 0; i--) { const it = items[i]; if (it.date === c.date && it.place === c.place && it.amount === c.amount) { idx = i; break; } }
+    if (idx >= 0) { items.splice(idx, 1); cancelled++; }
+  }
+  return { type, fname, items, cancelled };
+}
 function detectAndParse(aoa, fname) {
   const find = pred => aoa.slice(0, 15).findIndex(r => pred(r.map(cellStr)));
+  let hiO = find(cs => cs.includes('거래일자') && cs.includes('거래금액') && (cs.includes('가맹점 및 상품권명') || cs.includes('상품권명'))); if (hiO >= 0) return parseOnnuri(aoa, hiO, fname, aoa[hiO].map(cellStr).includes('가맹점 및 상품권명') ? 'onnuripay' : 'onnuricharge');
   let hi0 = find(cs => cs.includes('승인일시') && cs.includes('거래유형') && cs.includes('금액')); if (hi0 >= 0) return parseLocalPay(aoa, hi0, fname);
   let hi = find(cs => cs.some(s => /^이용일/.test(s) && s.length <= 6)); if (hi >= 0) return parseCard(aoa, hi, fname);
   hi = find(cs => cs.includes('거래일시')); if (hi >= 0) return parseBank(aoa, hi, fname);
@@ -759,6 +814,13 @@ function buildCands() {
         else if (it.kind === '캐시백 적립') cands.push({ tx_date: it.date, kind: 'income', amount: it.amt, pay: 'prepaid', place: `${nm} 캐시백 적립`, memo: '', cls: '수입>캐시백', tag: '', source: 'localpay', import_key: keyOf('lc', it.date, it.amt, it.place, it.ts + '적립') });
         else if (it.kind === '캐시백 사용') cands.push({ tx_date: it.date, kind: 'expense', amount: it.amt, pay: 'prepaid', place: `${nm} 캐시백 사용`, memo: '', cls: '이체>캐시백사용', tag: '', source: 'localpay', import_key: keyOf('lc', it.date, it.amt, it.place, it.ts + '사용') });
       }
+    } else if (f.type === 'onnuripay') {
+      for (const it of f.items) {
+        const h = H.ex.get(normPlace(it.place));
+        cands.push({ tx_date: it.date, kind: 'expense', amount: it.amount, pay: 'onnuri', place: it.place || '온누리', memo: '', cls: h ? h.cls : '', tag: h ? h.tag : '', source: 'onnuri', import_key: keyOf('op', it.date, it.amount, it.place, it.ts) });
+      }
+    } else if (f.type === 'onnuricharge') {
+      for (const it of f.items) cands.push({ tx_date: it.date, kind: 'expense', amount: it.amount, pay: 'cash', place: '온누리상품권 충전', memo: '', cls: '이체>온누리충전', tag: '', source: 'onnuri', _topup: true, _onnuriFace: true, import_key: keyOf('oc', it.date, it.amount, '충전', it.ts) });
     } else if (f.type === 'ledger') {
       for (const it of f.items) {
         const h = it.cls ? null : H.ex.get(normPlace(it.place));
@@ -766,13 +828,13 @@ function buildCands() {
       }
     } else {
       for (const it of f.items) {
-        const income =!(it.out > 0), amount = income ? it.inn : it.out, cardPay = !income && CARD_PAT.test(it.label), topup = !income && /오픈지역사랑상품|지역사랑상품|대전사랑/.test(it.label), h = (income ? H.inc : H.ex).get(normPlace(it.label));
-        cands.push({ tx_date: it.date, kind: income ? 'income' : 'expense', amount, pay: 'cash', place: it.label, memo: it.memo, cls: income ? (h ? h.cls : '수입>기타수입') : (cardPay ? '카드대금' : topup ? '이체>선불충전' : (h ? h.cls : '')), tag: h ? h.tag : '', source: 'bank', import_key: keyOf('bn', it.date, amount, it.label, income ? 'i' : 'o'), _cardPay: cardPay, _topup: topup });
+        const income =!(it.out > 0), onn = !income && /온누리/.test(it.label), amount = income ? it.inn : it.out, cardPay = !income && CARD_PAT.test(it.label), topup = !income && /오픈지역사랑상품|지역사랑상품|대전사랑/.test(it.label), h = (income ? H.inc : H.ex).get(normPlace(it.label));
+        cands.push({ tx_date: it.date, kind: income ? 'income' : 'expense', amount, pay: 'cash', place: it.label, memo: it.memo, cls: income ? (h ? h.cls : '수입>기타수입') : (onn ? '이체>온누리결제' : cardPay ? '카드대금' : topup ? '이체>선불충전' : (h ? h.cls : '')), tag: h ? h.tag : '', source: 'bank', import_key: keyOf('bn', it.date, amount, it.label, income ? 'i' : 'o'), _cardPay: cardPay, _topup: topup });
       }
     }
   }
   const keys = new Set(state.tx.map(t => t.import_key).filter(Boolean)), multi = {};
-  state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv|pp|cb|lw|lc)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
+  state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv|pp|cb|lw|lc|op|oc|od)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
   cands.forEach(c => {
     if (keys.has(c.import_key)) { c._dup = true; c._kdup = true; return; }
     const k = `${c.tx_date}|${c.amount}|${c.kind}`; if (!c._needAmt && multi[k] > 0) { multi[k]--; c._dup = true; }
@@ -780,12 +842,18 @@ function buildCands() {
   });
   // 출처가 달라도 같은 지역화폐 결제·충전이면 한 번만 (대전사랑 앱 파일 > 카드 명세서 > 은행 순서로 남김)
   {
-    const isPP = c => c.kind === 'expense' && c.pay === 'prepaid' && !(c.cls || '').startsWith('이체'), isTop = c => !!c._topup || (c.cls || '').startsWith('이체>선불충전');
-    const ex = { pp: {}, top: {} }, bat = { pp: {}, top: {} }, bump = (m, k, d) => { m[k] = (m[k] || 0) + d; };
-    state.tx.forEach(t => { const k = `${t.tx_date}|${t.amount}`; if (t.kind === 'expense' && t.pay === 'prepaid' && !(t.cls || '').startsWith('이체')) bump(ex.pp, k, 1); else if (t.kind === 'expense' && (t.cls || '').startsWith('이체>선불충전')) bump(ex.top, k, 1); });
-    const pri = c => c.source === 'localpay' ? 0 : c.source === 'card' ? 1 : c.source === 'bank' ? 2 : 3;
+    const grpOf = o => {   // pp 대전사랑 결제 / top 대전사랑 충전 / op 온누리 결제 / otop 온누리 충전(액면가)
+      const cls = o.cls || ''; if (o.kind !== 'expense') return null;
+      if (cls.startsWith('이체>선불충전')) return 'top';
+      if (cls.startsWith('이체>온누리충전')) return 'otop';
+      if (cls.startsWith('이체')) return null;
+      return o.pay === 'prepaid' ? 'pp' : o.pay === 'onnuri' ? 'op' : null;
+    };
+    const ex = { pp: {}, top: {}, op: {}, otop: {} }, bat = { pp: {}, top: {}, op: {}, otop: {} }, bump = (m, k, d) => { m[k] = (m[k] || 0) + d; };
+    state.tx.forEach(t => { const g0 = grpOf(t); if (g0) bump(ex[g0], `${t.tx_date}|${t.amount}`, 1); });
+    const pri = c => (c.source === 'localpay' || c.source === 'onnuri') ? 0 : c.source === 'card' ? 1 : c.source === 'bank' ? 2 : 3;
     [...cands].sort((a, b) => pri(a) - pri(b)).forEach(c => {
-      const grp = isPP(c) ? 'pp' : isTop(c) ? 'top' : null; if (!grp) return;
+      const grp = grpOf(c); if (!grp) return;
       const k = `${c.tx_date}|${c.amount}`;
       if (c._kdup) { if (ex[grp][k] > 0) ex[grp][k]--; return; }   // 이미 같은 키로 들어간 행: 기존 기록 몫을 소진
       if (c._dup) return;
@@ -794,7 +862,29 @@ function buildCands() {
       bat[grp][k] = c.source;
     });
   }
+  // 온누리 할인: 은행 '이체>온누리결제'(낸 돈) ↔ '이체>온누리충전'(액면가)을 같은 날짜끼리 짝지어 차액을 '수입>상품권할인'으로.
+  // 파일을 올리는 순서와 무관하게, 이번에 올린 후보 + 이미 저장된 기록을 모두 모아서 계산한다.
+  {
+    const sel = (cls, pred) => [...cands.filter(c => c.kind === 'expense' && (c.cls || '') === cls && !c._dup).map(c => ({ date: c.tx_date, amount: c.amount, isNew: true })),
+      ...state.tx.filter(t => t.kind === 'expense' && (t.cls || '').startsWith(cls)).map(t => ({ date: t.tx_date, amount: t.amount, isNew: false }))];
+    const paids = sel('이체>온누리결제'), faces = sel('이체>온누리충전');
+    const take = (pool, date, amount) => { let i = pool.findIndex(p => p.date === date && p.amount === amount && !p.isNew); if (i < 0) i = pool.findIndex(p => p.date === date && p.amount === amount); if (i >= 0) pool.splice(i, 1); };
+    state.tx.forEach(t => {   // 이미 만들어진 할인 행이 쓴 충전/결제 쌍은 다시 짝짓지 않음
+      const m = /^od\|([^|]+)\|\d+\|f(\d+)\|p(\d+)\|/.exec(t.import_key || ''); if (!m) return;
+      take(faces, m[1], +m[2]); take(paids, m[1], +m[3]);
+    });
+    for (const date of [...new Set(paids.map(p => p.date))]) {
+      const ps = paids.filter(p => p.date === date).sort((a, b) => b.amount - a.amount), fs = faces.filter(f => f.date === date).sort((a, b) => b.amount - a.amount);
+      for (const p of ps) {
+        const fi = fs.findIndex(f => f.amount >= p.amount && p.amount >= f.amount * 0.5); if (fi < 0) continue;
+        const face = fs.splice(fi, 1)[0].amount, diff = face - p.amount; if (diff <= 0) continue;
+        const key = keyOf('od', date, diff, 'f' + face, 'p' + p.amount), dup = keys.has(key);
+        cands.push({ tx_date: date, kind: 'income', amount: diff, pay: 'onnuri', place: '온누리상품권 할인', memo: '', cls: '수입>상품권할인', tag: '', source: 'onnuri', import_key: key, _dup: dup, _on: !dup });
+      }
+    }
+  }
   cands.forEach(c => { const ed = imp.ed[c.import_key]; if (!ed) return; if ('cls' in ed) c.cls = ed.cls; if (ed.amount > 0 && c._needAmt) { c.amount = ed.amount; c._needAmt = false; if (!c._dup) c._on = true; } if ('on' in ed && !c._dup && !c._needAmt) c._on = ed.on; });   // 사용자가 바꾼 값 유지
+  cands.forEach(c => { c._unc0 = c.kind === 'expense' && !c.cls && !c._cardPay && !c._topup; });   // 목록을 (다시) 만들 때만 계산 → 분류를 고르는 동안 행 순서는 고정
   cands.sort((a, b) => a.tx_date < b.tx_date ? -1 : a.tx_date > b.tx_date ? 1 : 0);
   imp.cands = cands;
 }
@@ -807,24 +897,28 @@ function renderImport() {
   const unc = on.filter(x => x.kind === 'expense' && !x.cls).length, sumOut = on.filter(x => x.kind === 'expense' && x.cls.split('>')[0] !== '카드대금').reduce((s, x) => s + x.amount, 0), sumIn = on.filter(x => x.kind === 'income').reduce((s, x) => s + x.amount, 0);
   const catOpts = sel => ['', ...allCats()].map(x => `<option value="${esc(x)}" ${x === sel ? 'selected' : ''}>${x || '미분류'}</option>`).join('');
   const incOpts = sel => INCOME_CATS.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
-  const needAmt = fresh.filter(x => x._needAmt).length;
-  const rows = fresh.map(x => { const i = c.indexOf(x); return `<tr><td><input type="checkbox" data-imp="chk" data-i="${i}" ${x._on ? 'checked' : ''} ${x._needAmt ? 'disabled' : ''} style="width:auto"></td>
-    <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}${x._topup ? ' <span class="tag na">충전</span>' : ''}${x.cls === '수입>캐시백' ? ' <span class="tag na">캐시백 적립</span>' : x.cls === '이체>캐시백사용' ? ' <span class="tag na">캐시백 사용</span>' : ''}<div class="note" style="margin:0">${x.pay === 'card' || x.pay === 'prepaid' ? payLabel(x.pay) : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
+  const needAmt = fresh.filter(x => x._needAmt).length, ons = imp.files.filter(f => f.type === 'onnuripay' || f.type === 'onnuricharge');
+  const rowOf = x => { const i = c.indexOf(x); return `<tr><td><input type="checkbox" data-imp="chk" data-i="${i}" ${x._on ? 'checked' : ''} ${x._needAmt ? 'disabled' : ''} style="width:auto"></td>
+    <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${x._unc0 && x.cls ? '<span style="color:var(--ok)">✓ </span>' : ''}${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}${x._topup ? ' <span class="tag na">충전</span>' : ''}${x.cls === '수입>캐시백' ? ' <span class="tag na">캐시백 적립</span>' : x.cls === '이체>캐시백사용' ? ' <span class="tag na">캐시백 사용</span>' : ''}<div class="note" style="margin:0">${['card', 'prepaid', 'onnuri'].includes(x.pay) ? payLabel(x.pay) : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
     <td class="${x.kind === 'income' ? 'pos' : ''}" style="white-space:nowrap">${x._needAmt ? `<input data-imp="amt" data-i="${i}" inputmode="numeric" placeholder="원화 금액" style="width:110px;font-size:13px;padding:4px">` : `${x.kind === 'income' ? '+' : '−'}${Math.round(x.amount).toLocaleString('ko-KR')}`}</td>
-    <td>${x._cardPay ? '' : (x.cls.startsWith('이체') || x.cls === '수입>캐시백') ? `<span class="note" style="margin:0">${esc(x.cls.replace('>', ' › '))}</span>` : x.kind === 'income' ? `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${incOpts(x.cls.split('>')[1])}</select>` : `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${catOpts(x.cls ? catOf(x) : '')}</select>`}</td></tr>`; }).join('');
+    <td>${x._cardPay ? '' : (x.cls.startsWith('이체') || x.cls === '수입>캐시백' || x.cls === '수입>상품권할인') ? `<span class="note" style="margin:0">${esc(x.cls.replace('>', ' › '))}</span>` : x.kind === 'income' ? `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${incOpts(x.cls.split('>')[1])}</select>` : `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${catOpts(x.cls ? catOf(x) : '')}</select>`}</td></tr>`; };
+  const grpA = fresh.filter(x => x._unc0), grpB = fresh.filter(x => !x._unc0), nUnc = grpA.filter(x => !x.cls).length;
+  const rows = (grpA.length ? `<tr><td colspan="5" style="text-align:left;font-size:12px;color:var(${nUnc ? '--warn' : '--ok'});padding-top:10px">${nUnc ? `미분류 ${nUnc}건 — 분류를 골라주세요 (위쪽)` : '미분류 정리 완료 ✓'}</td></tr>` + grpA.map(rowOf).join('') : '')
+    + (grpA.length && grpB.length ? '<tr><td colspan="5" style="text-align:left;font-size:12px;color:var(--sub);padding-top:10px">분류된 내역</td></tr>' : '') + grpB.map(rowOf).join('');
   $('#modal .sheet').innerHTML = `<h2 style="margin:0 0 6px;font-size:16px">엑셀 올리기</h2>
     <div class="note" style="margin:0 0 10px">카드 이용내역, 은행 거래내역, 지출점검시트(원본데이터)·네이버가계부 내려받기 파일을 한 번에 여러 개 올릴 수 있어요.</div>
     <input type="file" id="impFile" accept=".xls,.xlsx" multiple>
     ${imp.asset ? `<div class="banner ok" style="margin-top:12px">자산관리시트 ${esc(imp.asset.file_name)} — 월별기록 기준 ${assetLatestLabel(imp.asset)} · 저장하면 '자산' 탭에 반영됩니다</div>` : ''}
     ${imp.files.length ? `<div class="banner ${fresh.length ? 'ok' : 'warn'}" style="margin-top:12px">
       ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length || ledgers.length) && lps.length ? ' · ' : ''}${lps.map(f => { const nk = f.items.length - f.unknown, wal = f.items.some(it => it.kind === '결제' || it.kind === '충전'); return `대전사랑 ${wal ? '결제/충전' : '캐시백'} ${nk}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}${(() => { const mv = f.items.filter(it => it.kind === '잔액이동').length, other = f.unknown - mv; return (mv ? ` · 잔액이동 ${mv}건 제외 (카드 교체 때 잔액 옮김 — 분석 탭에 현재 잔액을 한 번 입력하세요)` : '') + (other > 0 ? ` · 알 수 없는 유형 ${other}건 제외` : ''); })()}`; }).join(' · ')}
+      ${ons.length ? `${(cards.length || banks.length || ledgers.length || lps.length) ? ' · ' : ''}${ons.map(f => `온누리 ${f.type === 'onnuripay' ? '결제' : '충전'} ${f.items.length}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}`).join(' · ')}` : ''}
       → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
-      ${imp.files.map((f, fi) => f.type === 'card' ? `<div class="note">${esc(f.fname)} — 결제수단: <select data-imp="fpay" data-f="${fi}" style="width:auto;font-size:13px;padding:4px"><option value="card" ${f.payAs === 'prepaid' ? '' : 'selected'}>신용카드</option><option value="prepaid" ${f.payAs === 'prepaid' ? 'selected' : ''}>지역화폐</option></select></div>` : '').join('')}
+      ${imp.files.map((f, fi) => f.type === 'card' ? `<div class="note">${esc(f.fname)} — 결제수단: <select data-imp="fpay" data-f="${fi}" style="width:auto;font-size:13px;padding:4px"><option value="card" ${f.payAs === 'prepaid' ? '' : 'selected'}>신용카드</option><option value="prepaid" ${f.payAs === 'prepaid' ? 'selected' : ''}>대전사랑카드</option></select></div>` : '').join('')}
       <div class="row2" style="margin-top:10px">${cards.length ? `<div><label class="f">할부 처리</label><select data-imp="mode"><option value="split" ${imp.mode === 'split' ? 'selected' : ''}>월별로 나누기 (기존 방식)</option><option value="full" ${imp.mode === 'full' ? 'selected' : ''}>한 번에 전액</option></select></div>` : ''}
       ${banks.length ? `<div><label class="f">은행의 카드대금 출금</label><select data-imp="cardpay"><option value="0" ${imp.incCardPay ? '' : 'selected'}>제외 (카드 내역과 중복)</option><option value="1" ${imp.incCardPay ? 'selected' : ''}>포함</option></select></div>` : ''}</div>
       ${needAmt ? `<div class="note"><b>해외 결제 ${needAmt}건은 원화 청구 금액을 입력해야 가져올 수 있어요 (카드 명세서 참고).</b></div>` : ''}
       ${newRules.length ? `<div class="note">추가될 규칙: ${newRules.map(r => `${esc(r.key)} → ${esc(r.nature)}`).join(', ')}</div>` : ''}
-      <div class="note">체크를 풀면 가져오지 않습니다. 분류는 파일에 적힌 값을 쓰고, 비어 있으면 같은 사용처를 전에 분류한 대로 채웠어요. 처음 보는 곳은 '미분류'예요.${unc ? ` <b>미분류 ${unc}건</b>` : ''}</div>
+      <div class="note">체크를 풀면 가져오지 않습니다. 분류는 파일에 적힌 값을 쓰고, 비어 있으면 같은 사용처를 전에 분류한 대로 채웠어요. 처음 보는 곳은 '미분류'예요.${nUnc ? ` <b>미분류 ${nUnc}건</b>` : ''}</div>
       <div style="overflow-x:auto;margin-top:8px"><table><tr><th></th><th>날짜</th><th style="text-align:left">사용처</th><th>금액</th><th>분류</th></tr>${rows || '<tr><td colspan="5" class="note">새로 가져올 내역이 없습니다.</td></tr>'}</table></div>
       <div class="note" style="margin-top:8px">선택 ${on.length}건 · 지출 ${won(sumOut)} · 수입 ${won(sumIn)}</div>
       ` : ''}
@@ -876,7 +970,7 @@ async function loadImportFiles(files) {
 const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.rules));
 handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
-  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, ...r }) => r);
+  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, _unc0, _onnuriFace, ...r }) => r);
   if (!rows.length && !state.imp.asset) return;
   const parts = [];
   if (state.imp.asset) { state.asset = await backend.saveAsset(state.imp.asset); state.assetErr = ''; parts.push('자산 데이터 저장'); }
