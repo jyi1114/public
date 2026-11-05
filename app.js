@@ -22,11 +22,12 @@ const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</spa
 
 const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, cycleStart: 9, payDay: 21 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
-  '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외',
+  '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
   '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '경조사/회비': '비정기', '의복/미용': '변동' };
 const CAT_ALIAS = { '의류/미용': '의복/미용' };
 const normCls = cls => { if (!cls) return ''; const s = String(cls), i = s.indexOf('>'), head = i < 0 ? s : s.slice(0, i); return head in CAT_ALIAS ? CAT_ALIAS[head] + (i < 0 ? '' : s.slice(i)) : s; };
-const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', '기타수입'];
+const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', '캐시백', '기타수입'];
+const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '지역화폐' : '현금·계좌';
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
 const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hMonth: null, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
@@ -131,7 +132,7 @@ function formHtml(p, t) {
     <div class="seg" data-grp="kind"><button type="button" data-val="expense" class="${inc ? '' : 'on'}">지출</button><button type="button" data-val="income" class="${inc ? 'on' : ''}">수입</button></div>
     <label class="f">금액</label><input class="amt" id="${p}amount" inputmode="numeric" placeholder="0" value="${t.amount ? Number(t.amount).toLocaleString('ko-KR') : ''}" autocomplete="off">
     <div class="row2"><div><label class="f">날짜</label><input id="${p}date" type="date" value="${esc(t.tx_date)}"></div>
-      <div id="${p}payWrap" ${inc ? 'hidden' : ''}><label class="f">결제수단</label><div class="seg" data-grp="pay"><button type="button" data-val="card" class="${t.pay === 'card' ? 'on' : ''}">카드</button><button type="button" data-val="cash" class="${t.pay === 'cash' ? 'on' : ''}">현금·계좌</button></div></div></div>
+      <div id="${p}payWrap" ${inc ? 'hidden' : ''}><label class="f">결제수단</label><div class="seg" data-grp="pay"><button type="button" data-val="card" class="${t.pay === 'card' ? 'on' : ''}">카드</button><button type="button" data-val="cash" class="${t.pay === 'cash' ? 'on' : ''}">현금·계좌</button><button type="button" data-val="prepaid" class="${t.pay === 'prepaid' ? 'on' : ''}">지역화폐</button></div></div></div>
     <div id="${p}expWrap" ${inc ? 'hidden' : ''}>
       <label class="f">사용처</label><input id="${p}place" list="${p}places" value="${esc(t.place)}" autocomplete="off" placeholder="예: 스타벅스">
       <datalist id="${p}places">${[...new Set(state.tx.map(x => x.place).filter(Boolean))].slice(0, 300).map(x => `<option value="${esc(x)}">`).join('')}</datalist>
@@ -177,7 +178,7 @@ const view = () => $('#view');
 function rowHtml(t) {
   const inc = t.kind === 'income', ex = t._n === '제외';
   return `<div class="item ${ex ? 'ex' : ''}" data-act="edit" data-id="${t.id}"><div class="l"><div class="t">${esc(t.place || t.memo || (inc ? '수입' : '(사용처 없음)'))}</div>
-    <div class="s">${esc(t.cls.replace('>', ' › ') || '미분류')} · ${t.pay === 'card' && !inc ? '카드' : inc ? '' : '현금·계좌'}${t.tag ? ' · ' + esc(t.tag) : ''}${ex ? ' · 제외' : ''}</div></div>
+    <div class="s">${esc(t.cls.replace('>', ' › ') || '미분류')} · ${inc ? '' : payLabel(t.pay)}${t.tag ? ' · ' + esc(t.tag) : ''}${ex ? ' · 제외' : ''}</div></div>
     <div class="a ${inc ? 'pos' : ''}">${inc ? '+' : '−'}${Math.round(t.amount).toLocaleString('ko-KR')}</div></div>`;
 }
 
@@ -286,6 +287,30 @@ function viewAnalysis() {
   // --- year limits ---
   const yr = today.slice(0, 4), boozeYtd = spend.filter(t => t._m.startsWith(yr) && /술\/유흥/.test(t.cls)).reduce((s, t) => s + t.amount, 0);
   h += `<div class="card"><h2>연간 한도 <small>${yr}년 누적</small></h2>${meter('술·유흥', boozeYtd, S.boozeYear, `<b>${won(boozeYtd)}</b> / ${won(S.boozeYear)} (${pct(boozeYtd / S.boozeYear)})`)}</div>`;
+
+  // --- 대전사랑카드(지역화폐) ---
+  const snaps = [...(S.prepaidSnaps || [])].sort((a, b) => a.date < b.date ? -1 : 1);
+  const ppTx = state.tx.filter(t => t.pay === 'prepaid' || (t.kind === 'income' && t.cls === '수입>캐시백')), ppTop = state.tx.filter(t => t.kind === 'expense' && (t.cls || '').startsWith('이체>선불충전'));
+  if (ppTx.length || ppTop.length || snaps.length) {
+    const sumOf = (l, f) => l.filter(f).reduce((s, t) => s + t.amount, 0);
+    const spentF = l => sumOf(l, t => t.kind === 'expense' && t.pay === 'prepaid'), cbF = l => sumOf(l, t => t.kind === 'income' && t.cls === '수입>캐시백');   // 수정 창에서 저장해 pay가 바뀌어도 캐시백으로 집계
+    const mTx = ppTx.filter(t => t._m === curKey), mTop = ppTop.filter(t => t._m === curKey);
+    const cbAll = cbF(ppTx), S0 = snaps.length ? snaps[snaps.length - 1] : null;
+    let snapHtml = '';
+    if (S0) {
+      const aft = ppTx.filter(t => t.tx_date > S0.date), topAft = sumOf(ppTop, t => t.tx_date > S0.date), cashAft = spentF(aft) - cbF(aft);
+      snapHtml = `<div class="note" style="margin:8px 0 0">최근 확인 잔액 (${S0.date.replace(/-/g, '.')}): 충전 ${won(S0.charge)} · 캐시백 ${won(S0.cashback)}</div>
+        <div style="margin-top:6px">추정 충전 잔액 (오늘): <b>${won(S0.charge + topAft - cashAft)}</b></div>
+        <div class="note">앱에 보이는 잔액과 다르면 빠진 기록이 있을 수 있어요. 지금까지 받은 캐시백 (추정) ≈ ${won(cbAll + S0.cashback)} (사용 ${won(cbAll)} + 잔액 ${won(S0.cashback)})</div>`;
+    }
+    h += `<div class="card"><h2>대전사랑카드 <small>지역화폐 · 충전은 지출이 아니라 이체</small></h2>
+      <table><tr><th></th><th>충전</th><th>사용(전액)</th><th>그중 캐시백</th></tr>
+      <tr><td>${curKey.replace('-', '.')}</td><td>${won(sumOf(mTop, () => true))}</td><td>${won(spentF(mTx))}</td><td>${won(cbF(mTx))}</td></tr>
+      <tr><td>전체</td><td>${won(sumOf(ppTop, () => true))}</td><td>${won(spentF(ppTx))}</td><td>${won(cbAll)}</td></tr></table>${snapHtml}
+      <div class="row2" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="ppDate" type="date" value="${today}"></div><div><label class="f">충전 잔액(원)</label><input id="ppCharge" inputmode="numeric" placeholder="0"></div></div>
+      <label class="f">캐시백 잔액(원)</label><input id="ppCb" inputmode="numeric" placeholder="0">
+      <button class="btn sec" data-act="saveSnap">잔액 기록</button></div>`;
+  }
 
   // --- cycles ---
   h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제</small></h2><table><tr><th>결제일</th><th>사용액</th><th>건수</th><th>변동</th><th>비정기</th><th>판정</th></tr>
@@ -545,7 +570,17 @@ const handlers = {
     const n = id => parseInt($(id).value.replace(/\D/g, ''), 10);
     const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), cycleStart: n('#sCs'), payDay: n('#sPd') };
     if (Object.values(s).some(v => !v && v !== 0)) throw new Error('숫자를 확인하세요'); if (s.cycleStart < 2 || s.cycleStart > 28 || s.payDay < 1 || s.payDay > 28) throw new Error('일자는 청구 시작 2~28, 결제일 1~28');
-    await backend.saveSettings(s); state.settings = { ...DEFAULT_SETTINGS, ...s }; toast('설정 저장됨');
+    const merged = { ...state.settings, ...s };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('설정 저장됨');
+  }),
+  saveSnap: () => run(async () => {
+    const num = id => { const v = $(id).value.replace(/\D/g, ''); return v === '' ? NaN : parseInt(v, 10); };
+    const date = $('#ppDate').value, charge = num('#ppCharge'), cashback = num('#ppCb');
+    if (!date) throw new Error('날짜를 입력하세요');
+    if (isNaN(charge) || isNaN(cashback) || charge < 0 || cashback < 0) throw new Error('충전 잔액과 캐시백 잔액을 숫자로 입력하세요');
+    const snaps = [...(state.settings.prepaidSnaps || []).filter(s => s.date !== date), { date, charge, cashback }].sort((a, b) => a.date < b.date ? -1 : 1).slice(-24);
+    const merged = { ...state.settings, prepaidSnaps: snaps };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('잔액 기록됨'); render();
   }),
   addRule: () => run(async () => {
     const k = $('#rKey').value.trim(); if (!k) throw new Error('분류를 입력하세요');
@@ -556,7 +591,7 @@ const handlers = {
   exportJson: () => download('가계부백업_' + todayISO() + '.json', JSON.stringify({ tx: state.tx.map(({ _n, _m, id, user_id, created_at, ...r }) => r), rules: Object.entries(state.rules).map(([key, nature]) => ({ key, nature })), settings: state.settings }, null, 1), 'application/json'),
   exportCsv: () => {
     const head = ['날짜', '구분', '금액', '결제', '사용처', '내역', '분류', '태그', '성격'];
-    const lines = [head, ...[...state.tx].sort((a, b) => a.tx_date < b.tx_date ? -1 : 1).map(t => [t.tx_date, t.kind === 'income' ? '수입' : '지출', t.amount, t.pay === 'card' ? '카드' : '현금·계좌', t.place, t.memo, t.cls, t.tag, t._n])];
+    const lines = [head, ...[...state.tx].sort((a, b) => a.tx_date < b.tx_date ? -1 : 1).map(t => [t.tx_date, t.kind === 'income' ? '수입' : '지출', t.amount, payLabel(t.pay), t.place, t.memo, t.cls, t.tag, t._n])];
     download('가계부_' + todayISO() + '.csv', '﻿' + lines.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n'), 'text/csv');
   }
 };
@@ -613,10 +648,10 @@ function parseCard(aoa, hi, fname) {
   for (const r of aoa.slice(hi + 1)) {
     const date = cellDate(g(r, '이용일')); if (!date) continue;
     const appr = toNum(g(r, '승인금액')), buy = toNum(g(r, '매입금액')), amount = Math.round(buy > 0 ? buy : appr);
-    if (cellStr(g(r, '상태')) === '취소') { cancelled++; cancelAmt += appr; continue; }
+    if (cellStr(g(r, '상태')).includes('취소')) { cancelled++; cancelAmt += appr; continue; }
     if (amount <= 0) continue;   // 0원·환불(음수) 행은 건너뜀 (DB는 음수 금액을 받지 않음)
     let n = 1; if (cellStr(g(r, '이용구분')) === '할부') n = Math.max(1, parseInt(toNum(g(r, '할부기간')), 10) || 1);
-    items.push({ date, name: sp1(g(r, '가맹점명')) || '카드', amount, n });
+    items.push({ date, name: sp1(g(r, '가맹점명')) || '카드', amount, n, point: toNum(g(r, '포인트사용')), approval: cellStr(g(r, '승인번호')), full: Math.round(appr) });
   }
   return { type: 'card', fname, items, cancelled, cancelAmt };
 }
@@ -662,6 +697,12 @@ function buildCands() {
   for (const f of imp.files) {
     if (f.type === 'card') {
       for (const it of f.items) {
+        if (f.payAs === 'prepaid') {   // 지역화폐: 전액을 지출로, 캐시백(포인트) 사용분은 같은 날 수입으로 따로
+          const amount = it.full > 0 ? it.full : it.amount, h = H.ex.get(normPlace(it.name)), ap = it.approval ? 'ap' + it.approval : it.date;
+          cands.push({ tx_date: it.date, kind: 'expense', amount, pay: 'prepaid', place: it.name, memo: '', cls: h ? h.cls : '', tag: h ? h.tag : '', source: 'card', import_key: keyOf('pp', it.date, amount, it.name, ap) });
+          if (it.point > 0) cands.push({ tx_date: it.date, kind: 'income', amount: Math.round(it.point), pay: 'prepaid', place: `${it.name} 캐시백 사용`, memo: '', cls: '수입>캐시백', tag: '', source: 'card', import_key: keyOf('cb', it.date, Math.round(it.point), it.name, ap) });
+          continue;
+        }
         if (it.usd > 0 && !(it.amount > 0)) {   // 해외 결제: 원화 청구액을 사용자가 입력해야 함
           const place = `${it.name} (해외 $${it.usd})`, h = H.ex.get(normPlace(it.name));
           cands.push({ tx_date: it.date, kind: 'expense', amount: 0, pay: it.check ? 'cash' : 'card', place, memo: '', cls: h ? h.cls : '', tag: h ? h.tag : '', source: 'card', _needAmt: true,
@@ -682,13 +723,13 @@ function buildCands() {
       }
     } else {
       for (const it of f.items) {
-        const income =!(it.out > 0), amount = income ? it.inn : it.out, cardPay = !income && CARD_PAT.test(it.label), h = (income ? H.inc : H.ex).get(normPlace(it.label));
-        cands.push({ tx_date: it.date, kind: income ? 'income' : 'expense', amount, pay: 'cash', place: it.label, memo: it.memo, cls: income ? (h ? h.cls : '수입>기타수입') : (cardPay ? '카드대금' : (h ? h.cls : '')), tag: h ? h.tag : '', source: 'bank', import_key: keyOf('bn', it.date, amount, it.label, income ? 'i' : 'o'), _cardPay: cardPay });
+        const income =!(it.out > 0), amount = income ? it.inn : it.out, cardPay = !income && CARD_PAT.test(it.label), topup = !income && /오픈지역사랑상품|지역사랑상품|대전사랑/.test(it.label), h = (income ? H.inc : H.ex).get(normPlace(it.label));
+        cands.push({ tx_date: it.date, kind: income ? 'income' : 'expense', amount, pay: 'cash', place: it.label, memo: it.memo, cls: income ? (h ? h.cls : '수입>기타수입') : (cardPay ? '카드대금' : topup ? '이체>선불충전' : (h ? h.cls : '')), tag: h ? h.tag : '', source: 'bank', import_key: keyOf('bn', it.date, amount, it.label, income ? 'i' : 'o'), _cardPay: cardPay, _topup: topup });
       }
     }
   }
   const keys = new Set(state.tx.map(t => t.import_key).filter(Boolean)), multi = {};
-  state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
+  state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv|pp|cb)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
   cands.forEach(c => {
     if (keys.has(c.import_key)) { c._dup = true; return; }
     const k = `${c.tx_date}|${c.amount}|${c.kind}`; if (!c._needAmt && multi[k] > 0) { multi[k]--; c._dup = true; }
@@ -709,7 +750,7 @@ function renderImport() {
   const incOpts = sel => INCOME_CATS.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
   const needAmt = fresh.filter(x => x._needAmt).length;
   const rows = fresh.map(x => { const i = c.indexOf(x); return `<tr><td><input type="checkbox" data-imp="chk" data-i="${i}" ${x._on ? 'checked' : ''} ${x._needAmt ? 'disabled' : ''} style="width:auto"></td>
-    <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}<div class="note" style="margin:0">${x.pay === 'card' ? '카드' : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
+    <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}${x._topup ? ' <span class="tag na">충전</span>' : ''}<div class="note" style="margin:0">${x.pay === 'card' || x.pay === 'prepaid' ? payLabel(x.pay) : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
     <td class="${x.kind === 'income' ? 'pos' : ''}" style="white-space:nowrap">${x._needAmt ? `<input data-imp="amt" data-i="${i}" inputmode="numeric" placeholder="원화 금액" style="width:110px;font-size:13px;padding:4px">` : `${x.kind === 'income' ? '+' : '−'}${Math.round(x.amount).toLocaleString('ko-KR')}`}</td>
     <td>${x._cardPay ? '' : x.kind === 'income' ? `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${incOpts(x.cls.split('>')[1])}</select>` : `<select data-imp="cat" data-i="${i}" style="width:auto;font-size:13px;padding:4px">${catOpts(x.cls ? catOf(x) : '')}</select>`}</td></tr>`; }).join('');
   $('#modal .sheet').innerHTML = `<h2 style="margin:0 0 6px;font-size:16px">엑셀 올리기</h2>
@@ -719,6 +760,7 @@ function renderImport() {
     ${imp.files.length ? `<div class="banner ${fresh.length ? 'ok' : 'warn'}" style="margin-top:12px">
       ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}
       → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
+      ${imp.files.map((f, fi) => f.type === 'card' ? `<div class="note">${esc(f.fname)} — 결제수단: <select data-imp="fpay" data-f="${fi}" style="width:auto;font-size:13px;padding:4px"><option value="card" ${f.payAs === 'prepaid' ? '' : 'selected'}>신용카드</option><option value="prepaid" ${f.payAs === 'prepaid' ? 'selected' : ''}>지역화폐</option></select></div>` : '').join('')}
       <div class="row2" style="margin-top:10px">${cards.length ? `<div><label class="f">할부 처리</label><select data-imp="mode"><option value="split" ${imp.mode === 'split' ? 'selected' : ''}>월별로 나누기 (기존 방식)</option><option value="full" ${imp.mode === 'full' ? 'selected' : ''}>한 번에 전액</option></select></div>` : ''}
       ${banks.length ? `<div><label class="f">은행의 카드대금 출금</label><select data-imp="cardpay"><option value="0" ${imp.incCardPay ? '' : 'selected'}>제외 (카드 내역과 중복)</option><option value="1" ${imp.incCardPay ? 'selected' : ''}>포함</option></select></div>` : ''}</div>
       ${needAmt ? `<div class="note"><b>해외 결제 ${needAmt}건은 원화 청구 금액을 입력해야 가져올 수 있어요 (카드 명세서 참고).</b></div>` : ''}
@@ -766,6 +808,7 @@ async function loadImportFiles(files) {
       const names = [...wb.SheetNames.filter(n => n.includes('원본데이터')), ...wb.SheetNames.filter(n => !n.includes('원본데이터'))];
       for (const sn of names) { res = detectAndParse(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' }), f.name); if (res) break; }
       if (!res) throw new Error(`${f.name}: 카드 이용내역('이용일'), 은행 거래내역('거래일시'), 가계부/지출점검시트('날짜·사용처·현금·카드'), 자산관리시트('월별기록·대시보드' 시트) 형식이 아닙니다`);
+      if (res.type === 'card') res.payAs = /대전사랑|지역화폐|지역사랑/.test(f.name) ? 'prepaid' : 'card';
       parsed.push(res);
     }
     state.imp.files = parsed; state.imp.rules = [...ruleMap].map(([key, nature]) => ({ key, nature })); buildCands(); renderImport();
@@ -774,7 +817,7 @@ async function loadImportFiles(files) {
 const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.rules));
 handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
-  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, ...r }) => r);
+  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, ...r }) => r);
   if (!rows.length && !state.imp.asset) return;
   const parts = [];
   if (state.imp.asset) { state.asset = await backend.saveAsset(state.imp.asset); state.assetErr = ''; parts.push('자산 데이터 저장'); }
@@ -794,6 +837,7 @@ document.addEventListener('change', e => {
   else if (k === 'cat') { const x = c[i]; if (x.kind === 'income') x.cls = '수입>' + el.value; else x.cls = el.value ? (el.value === catOf(x) && x.cls ? x.cls : el.value) : ''; ed(x).cls = x.cls; renderImportKeepScroll(); }
   else if (k === 'mode') { state.imp.mode = el.value; buildCands(); renderImport(); }
   else if (k === 'amt') { const v = parseInt(el.value.replace(/\D/g, ''), 10) || 0; if (v > 0) { c[i].amount = v; c[i]._needAmt = false; c[i]._on = true; ed(c[i]).amount = v; ed(c[i]).on = true; renderImportKeepScroll(); } }
+  else if (k === 'fpay') { state.imp.files[+el.dataset.f].payAs = el.value; buildCands(); renderImport(); }
   else if (k === 'cardpay') { state.imp.incCardPay = el.value === '1'; c.forEach(x => { if (x._cardPay && !x._dup) x._on = state.imp.incCardPay; }); renderImport(); }
 });
 function renderImportKeepScroll() { const s = $('#modal .sheet'), y = s.scrollTop; renderImport(); $('#modal .sheet').scrollTop = y; }
