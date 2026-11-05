@@ -30,7 +30,7 @@ const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', 
 const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '대전사랑' : p === 'onnuri' ? '온누리' : '현금·계좌';
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
-const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hFilter: { month: null, cat: null }, hSort: 'new', hLimit: 200, hAdd: false, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
+const state = { user: null, tx: [], rules: { ...DEFAULT_RULES }, settings: { ...DEFAULT_SETTINGS }, tab: 'input', hFilter: { month: todayISO().slice(0, 7), cats: [] }, hSort: 'new', hLimit: 200, hQuery: '', aMonth: null, form: null, asset: null, assetErr: '' };
 
 // ---------- backend ----------
 function makeMock() {
@@ -196,39 +196,35 @@ function viewInput() {
 
 const HSORTS = { new: '날짜 최신순', old: '날짜 오래된순', high: '금액 높은순', low: '금액 낮은순' };
 function viewHistory() {
-  const F = state.hFilter ??= { month: null, cat: null };
+  const F = state.hFilter; if (!Array.isArray(F.cats)) F.cats = [];
   const months = monthsOf(); if (F.month && !months.includes(F.month)) months.unshift(F.month);
-  const cats = ['미분류', ...allCats().filter(c => c !== '미분류')]; if (F.cat && !cats.includes(F.cat)) cats.push(F.cat);
-  view().innerHTML = `<div class="card"><input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}">
-    <div class="hctl"><select id="hSort">${Object.entries(HSORTS).map(([v, l]) => `<option value="${v}" ${v === state.hSort ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <div class="hchips" id="hChips"></div></div>
-    <div class="hfsel" id="hFSel" ${state.hAdd ? '' : 'hidden'}><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
-      <select id="hFCat"><option value="">대분류 전체</option>${cats.map(c => `<option value="${esc(c)}" ${c === F.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div></div>
+  const cats = ['미분류', ...allCats().filter(c => c !== '미분류')]; F.cats.forEach(c => { if (!cats.includes(c)) cats.push(c); });
+  view().innerHTML = `<div class="card" style="overflow:visible;position:relative;z-index:5"><input id="hQuery" type="search" placeholder="검색 (미분류 = 분류 안 된 내역)" value="${esc(state.hQuery)}">
+    <div class="hfsel"><span class="hflbl">필터</span><select id="hFMonth"><option value="">월 전체</option>${months.map(m => `<option value="${m}" ${m === F.month ? 'selected' : ''}>${m}</option>`).join('')}</select>
+      <div class="catWrap"><button type="button" id="hFCatBtn" class="catBtn"></button>
+        <div class="catPanel" id="hCatPanel" hidden><button type="button" class="catClear" data-clear="1">전체 해제</button>${cats.map(c => `<label class="catRow"><input type="checkbox" value="${esc(c)}" ${F.cats.includes(c) ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}</div></div></div></div>
     <div id="hBody"></div>`;
-  const refresh = () => { state.hLimit = 200; renderHistoryChips(); renderHistoryBody(); };
+  const label = () => { const n = F.cats.length; $('#hFCatBtn').textContent = (n === 0 ? '대분류 전체' : n === 1 ? F.cats[0] : `${F.cats[0]} 외 ${n - 1}`) + ' ▾'; };
   $('#hQuery').addEventListener('input', e => { state.hQuery = e.target.value; state.hLimit = 200; renderHistoryBody(); });
-  $('#hSort').onchange = e => { state.hSort = e.target.value; state.hLimit = 200; renderHistoryBody(); };
-  $('#hFMonth').onchange = e => { F.month = e.target.value || null; refresh(); };
-  $('#hFCat').onchange = e => { F.cat = e.target.value || null; refresh(); };
-  $('#hChips').onclick = e => {
-    const b = e.target.closest('button'); if (!b) return;
-    if (b.dataset.rm === 'month') { F.month = null; $('#hFMonth').value = ''; refresh(); }
-    else if (b.dataset.rm === 'cat') { F.cat = null; $('#hFCat').value = ''; refresh(); }
-    else if (b.dataset.add) { state.hAdd = !state.hAdd; $('#hFSel').hidden = !state.hAdd; renderHistoryChips(); }
+  $('#hFMonth').onchange = e => { F.month = e.target.value || null; state.hLimit = 200; renderHistoryBody(); };
+  $('#hFCatBtn').onclick = () => { const p = $('#hCatPanel'); p.hidden = !p.hidden; };
+  $('#hCatPanel').onchange = e => {
+    const cb = e.target.closest('input[type=checkbox]'); if (!cb) return;
+    F.cats = [...$('#hCatPanel').querySelectorAll('input:checked')].map(x => x.value); state.hLimit = 200; label(); renderHistoryBody();
   };
-  renderHistoryChips();
+  $('#hCatPanel').onclick = e => {
+    if (!e.target.closest('[data-clear]')) return;
+    $('#hCatPanel').querySelectorAll('input').forEach(x => x.checked = false); F.cats = []; state.hLimit = 200; label(); renderHistoryBody();
+  };
+  if (!viewHistory._doc) { viewHistory._doc = true; document.addEventListener('click', e => { const p = $('#hCatPanel'); if (p && !p.hidden && !e.target.closest('.catWrap')) p.hidden = true; }); }   // 한 번만 등록
+  label();
   renderHistoryBody();
 }
-function renderHistoryChips() {
-  const F = state.hFilter, el = $('#hChips'); if (!el) return;
-  el.innerHTML = (F.month ? `<button type="button" class="hchip" data-rm="month">${esc(F.month)} ✕</button>` : '')
-    + (F.cat ? `<button type="button" class="hchip" data-rm="cat">${esc(F.cat)} ✕</button>` : '')
-    + `<button type="button" class="hchip add" data-add="1">${state.hAdd ? '− 필터' : '＋ 필터'}</button>`;
-}
 function renderHistoryBody() {
-  const F = state.hFilter, q = state.hQuery.trim().toLowerCase(), flat = state.hSort === 'high' || state.hSort === 'low';
+  const F = state.hFilter; if (!Array.isArray(F.cats)) F.cats = [];
+  const q = state.hQuery.trim().toLowerCase(), flat = state.hSort === 'high' || state.hSort === 'low';
   const cmpDate = (a, b) => a.tx_date < b.tx_date ? 1 : a.tx_date > b.tx_date ? -1 : ((a.created_at || '') < (b.created_at || '') ? 1 : (a.created_at || '') > (b.created_at || '') ? -1 : 0);
-  const list = state.tx.filter(t => (!F.month || t._m === F.month) && (!F.cat || catOf(t) === F.cat)
+  const list = state.tx.filter(t => (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(catOf(t)))
     && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
   list.sort(state.hSort === 'old' ? (a, b) => -cmpDate(a, b) : state.hSort === 'high' ? (a, b) => (b.amount - a.amount) || cmpDate(a, b) : state.hSort === 'low' ? (a, b) => (a.amount - b.amount) || cmpDate(a, b) : cmpDate);
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
@@ -240,7 +236,8 @@ function renderHistoryBody() {
     body += rowHtml(t, flat);
   });
   $('#hBody').innerHTML = `<div class="card"><div class="sum"><div>지출<b>${won(exp)}</b></div><div>수입<b class="pos">${won(inc)}</b></div><div>건수<b>${list.length}건</b></div></div></div>
-    <div class="card">${body || '<div class="note">조건에 맞는 내역이 없습니다.</div>'}${rest > 0 ? `<button class="btn sec" data-act="hMore">더 보기 (${rest}건 남음)</button>` : ''}</div>`;
+    <div class="card"><div class="lhead"><span></span><select id="hSort">${Object.entries(HSORTS).map(([v, l]) => `<option value="${v}" ${v === state.hSort ? 'selected' : ''}>${l}</option>`).join('')}</select></div>${body || '<div class="note">조건에 맞는 내역이 없습니다.</div>'}${rest > 0 ? `<button class="btn sec" data-act="hMore">더 보기 (${rest}건 남음)</button>` : ''}</div>`;
+  $('#hSort').onchange = e => { state.hSort = e.target.value; state.hLimit = 200; renderHistoryBody(); };
 }
 
 function meter(label, value, limit, right) {
@@ -388,7 +385,7 @@ function viewAnalysis() {
   };
   cw.onclick = pick; tw.onclick = pick; kw.onclick = pick;
   view().querySelectorAll('[data-cat]').forEach(el => el.onclick = () => {
-    state.hFilter = { month: state.aMonth, cat: el.dataset.cat }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
+    state.hFilter = { month: state.aMonth, cats: [el.dataset.cat] }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; viewAnalysis(); };
 }
