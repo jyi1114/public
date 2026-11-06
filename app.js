@@ -335,14 +335,18 @@ function viewAnalysis() {
   const od = Number(S.overdraftLimit) || 0, pl = payments(today), di = nextPayIdx(pl, today), opts = pl.slice(0, di + 1);
   const pc = opts.find(p => p.ym === state.pSel) || opts[di], ci = pl.indexOf(pc), prev = pl[ci - 1], isDef = ci === di, past = pc.pay <= today && !isDef, upc = !past;
   const dday = Math.max(0, Math.ceil(dnum(pc.pay) - dnum(today))), mdOf = iso => `${+iso.slice(5, 7)}.${+iso.slice(8, 10)}`, dd = x => x.replace(/-/g, '.');
-  const bill0 = spend.filter(t => t.pay === 'card' && t.tx_date >= pc.start && t.tx_date <= pc.end).reduce((s, t) => s + t.amount, 0);
-  const inProg = today < pc.end, ptotal = dnum(pc.end) - dnum(pc.start) + 1, el = Math.min(Math.max(dnum(today), dnum(pc.start)), dnum(pc.end)) - dnum(pc.start) + 1;
-  const est = inProg && el >= 5 ? bill0 / el * ptotal : null, bill = est != null ? est : bill0, lbl = inProg ? ' (예상)' : '';
-  let bal = null;   // 통장 잔액: 이 결제 기간(앞 결제일 ≤ 날짜 < 이번 결제일) 안의 기록 중 최신 (결제일 당일 기록은 다음 결제 몫)
-  const inWin = d => (!prev || d >= prev.pay) && d < pc.pay;
-  const bs = [...(S.bankSnaps || [])].filter(s => inWin(s.date) && !isNaN(Number(s.balance))).sort((a, b) => a.date < b.date ? -1 : 1).pop();
-  if (bs) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}` };
-  if (state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (inWin(ad) && (!bal || ad > bal.date)) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
+  const cashCalc = p => {   // 결제 p의 청구 예정액·통장 잔액 계산
+    const pv = pl[pl.indexOf(p) - 1], bill0 = spend.filter(t => t.pay === 'card' && t.tx_date >= p.start && t.tx_date <= p.end).reduce((s, t) => s + t.amount, 0);
+    const inProg = today < p.end, ptotal = dnum(p.end) - dnum(p.start) + 1, el = Math.min(Math.max(dnum(today), dnum(p.start)), dnum(p.end)) - dnum(p.start) + 1;
+    const est = inProg && el >= 5 ? bill0 / el * ptotal : null;
+    let bal = null;   // 통장 잔액: 이 결제 기간(앞 결제일 ≤ 날짜 < 이번 결제일) 안의 기록 중 최신 (결제일 당일 기록은 다음 결제 몫)
+    const inWin = d => (!pv || d >= pv.pay) && d < p.pay;
+    const bs = [...(S.bankSnaps || [])].filter(s => inWin(s.date) && !isNaN(Number(s.balance))).sort((a, b) => a.date < b.date ? -1 : 1).pop();
+    if (bs) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}` };
+    if (state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (inWin(ad) && (!bal || ad > bal.date)) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
+    return { bill0, inProg, ptotal, el, est, bill: est != null ? est : bill0, bal };
+  };
+  const { bill0, inProg, ptotal, el, est, bill, bal } = cashCalc(pc), lbl = inProg ? ' (예상)' : '';
   const has21 = upc && pc.pay.slice(8, 10) === '21', [ty, tm] = today.split('-').map(Number);
   const mid21 = upc && !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pc.pay; });
   let cashRows = '<div class="note">이 결제 기간의 통장 잔액을 기록하세요.</div>';
@@ -359,17 +363,24 @@ function viewAnalysis() {
       ${ago > 10 && upc ? `<div class="note" style="color:var(--warn)">잔액 기록이 ${ago}일 전이에요. 새로 기록하세요.</div>` : ''}`;
   }
   const PR = S.payRecords || {};
-  const pastHtml = past ? `<table><tr><th style="text-align:left">월</th><th>청구액</th><th>통장잔액</th><th>판정</th></tr>${opts.slice(0, di).reverse().map(p => {
+  const vTag = (v, s = '') => v >= 0 ? tag('적절' + s, 'ok') : v >= -od ? tag('위험' + s, 'warn') : tag('파산' + s, 'bad');
+  const predRow = (() => {   // 맨 위: 다가오는 결제 (예측) — 인출 후 예상 잔액
+    const p = opts[di], c = cashCalc(p), sel = p === pc, aft = c.bal ? c.bal.v - c.bill : null;
+    return `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제 (예측)</td><td>${won(c.bill)}</td>`
+      + (aft != null ? `<td>${won(aft)} <span class="note">예상</span></td><td>${vTag(aft)}</td></tr>` : `<td>-</td><td><span class="note">잔액 기록 필요</span></td></tr>`);
+  })();
+  const pastHtml = `<div class="note" style="margin:14px 0 6px">결제 기록 <span class="note">(예측 1줄 + 지난 결제 확정 기록)</span></div><table><tr><th style="text-align:left">월</th><th>청구액</th><th>통장잔액</th><th>판정</th></tr>${predRow}${opts.slice(0, di).reverse().map(p => {
     const r = PR[p.ym], sel = p === pc, hasR = r && r.bal != null && !isNaN(r.bal);
     return `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제</td>`
       + (hasR ? `<td>${won(r.bill)}</td><td>${won(r.bal)} <span class="note">${r.balDate ? dd(r.balDate).slice(5) : ''}</span></td><td>${r.bal >= 0 ? tag('적절', 'ok') : r.bal >= -od ? tag('위험', 'warn') : tag('파산', 'bad')}</td></tr>` : `<td>-</td><td>-</td><td><span class="note">은행 기록 필요</span></td></tr>`);
-  }).join('')}</table><div class="note">결제월 은행 거래내역의 하나카드·KB카드출금 합계와 결제일+2일 마지막 거래 후 잔액이에요. 은행 거래내역을 올리면 채워져요.</div>` : '';
-  h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
-    ${past ? pastHtml : `${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
+  }).join('')}</table><div class="note">결제월 은행 거래내역의 하나카드·KB카드출금 합계와 결제일+2일 마지막 거래 후 잔액이에요. 은행 거래내역을 올리면 채워져요. (예측) 줄의 통장잔액은 인출 후 예상 잔액이에요.</div>`;
+  h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제${p === opts[di] ? ' (예측)' : ''}</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
+    ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
     ${cashRows}
     ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
+    ${pastHtml}
     <div class="row2 snapRow" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="bkDate" type="date" value="${today}"></div><div><label class="f">통장 잔액(원)</label><input id="bkBal" inputmode="text" placeholder="예: -1416257"></div></div>
-    <button class="btn sec" data-act="saveBankSnap">잔액 기록</button>`}</div>`;
+    <button class="btn sec" data-act="saveBankSnap">잔액 기록</button></div>`;
 
   // --- monthly ---
   const mrows = keys.map(k => ({ k, ...B[k], inc: incBy[k] || 0, label: k.slice(2) }));
