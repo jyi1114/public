@@ -364,17 +364,15 @@ function viewAnalysis() {
   }
   const PR = S.payRecords || {};
   const vTag = (v, s = '') => v >= 0 ? tag('적절' + s, 'ok') : v >= -od ? tag('위험' + s, 'warn') : tag('파산' + s, 'bad');
-  const predRow = (() => {   // 맨 위: 다가오는 결제 (예측) — 인출 후 예상 잔액
-    const p = opts[di], c = cashCalc(p), sel = p === pc, aft = c.bal ? c.bal.v - c.bill : null;
-    return `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제 (예측)</td><td>${won(c.bill)}</td>`
-      + (aft != null ? `<td>${won(aft)} <span class="note">예상</span></td><td>${vTag(aft)}</td></tr>` : `<td>-</td><td><span class="note">잔액 기록 필요</span></td></tr>`);
-  })();
-  const pastHtml = `<div class="note" style="margin:14px 0 6px">결제 기록 <span class="note">(예측 1줄 + 지난 결제 확정 기록)</span></div><table><tr><th style="text-align:left">월</th><th>청구액</th><th>통장잔액</th><th>판정</th></tr>${predRow}${opts.slice(0, di).reverse().map(p => {
-    const r = PR[p.ym], sel = p === pc, hasR = r && r.bal != null && !isNaN(r.bal);
-    return `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제</td>`
-      + (hasR ? `<td>${won(r.bill)}</td><td>${won(r.bal)} <span class="note">${r.balDate ? dd(r.balDate).slice(5) : ''}</span></td><td>${r.bal >= 0 ? tag('적절', 'ok') : r.bal >= -od ? tag('위험', 'warn') : tag('파산', 'bad')}</td></tr>` : `<td>-</td><td>-</td><td><span class="note">은행 기록 필요</span></td></tr>`);
-  }).join('')}</table><div class="note">결제월 은행 거래내역의 하나카드·KB카드출금 합계와 결제일+2일 마지막 거래 후 잔액이에요. 은행 거래내역을 올리면 채워져요. (예측) 줄의 통장잔액은 인출 후 예상 잔액이에요.</div>`;
-  h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제${p === opts[di] ? ' (예측)' : ''}</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
+  const isConf = p => { const r = PR[p.ym]; return !!(r && r.bal != null && !isNaN(r.bal)); };   // 은행 거래내역으로 확정된 결제
+  const pastHtml = `<div class="note" style="margin:14px 0 6px">결제 기록</div><table><tr><th style="text-align:left">월</th><th>청구액</th><th>통장잔액</th><th>판정</th></tr>${[...opts].reverse().map(p => {
+    const sel = p === pc, conf = isConf(p), r = PR[p.ym];
+    const head = `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제${conf ? '' : ' (예측)'}</td>`;
+    if (conf) return head + `<td>${won(r.bill)}</td><td>${won(r.bal)} <span class="note">${r.balDate ? dd(r.balDate).slice(5) : ''}</span></td><td>${vTag(r.bal)}</td></tr>`;
+    const c = cashCalc(p), aft = c.bal ? c.bal.v - c.bill : null;   // 확정 전: 카드 사용액과 기록한 통장 잔액으로 계산한 인출 후 예상 잔액
+    return head + `<td>${won(c.bill)}</td>` + (aft != null ? `<td>${won(aft)} <span class="note">예상</span></td><td>${vTag(aft)}</td></tr>` : `<td>-</td><td><span class="note">잔액 기록 필요</span></td></tr>`);
+  }).join('')}</table><div class="note">(예측) 줄은 카드 사용액과 기록한 통장 잔액으로 계산한 인출 후 예상 잔액이에요. 결제일+2일까지 들어간 은행 거래내역을 올리면 확정 기록(하나카드·KB카드출금 합계, 결제일+2일 마지막 거래 후 잔액)으로 바뀌고 (예측)이 떨어져요.</div>`;
+  h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제${isConf(p) ? '' : ' (예측)'}</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
     ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
     ${cashRows}
     ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
