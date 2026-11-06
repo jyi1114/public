@@ -9,7 +9,9 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const won = n => (n == null || isNaN(n)) ? '-' : Math.round(n).toLocaleString('ko-KR') + '원';
 const pct = (v, d = 0) => (v * 100).toFixed(d) + '%';
 const p2 = n => String(n).padStart(2, '0');
-const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+let TODAY_OVERRIDE = null;   // 테스트용: DEMO 모드에서만 ?today=YYYY-MM-DD 로 오늘 날짜를 바꿈
+if (DEMO) { const q = new URLSearchParams(location.search).get('today'); if (/^\d{4}-\d{2}-\d{2}$/.test(q || '')) TODAY_OVERRIDE = q; }
+const todayISO = () => { if (TODAY_OVERRIDE) return TODAY_OVERRIDE; const d = new Date(); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
 const dnum = iso => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) / 86400000; };
 const isoOf = dn => new Date(dn * 86400000).toISOString().slice(0, 10);
 const mmdd = iso => `${iso.slice(5, 7)}.${iso.slice(8, 10)}`;
@@ -20,7 +22,7 @@ const loadScript = src => new Promise((res, rej) => { const s = document.createE
 const statusCls = t => /⚠|초과|부족|위험/.test(t || '') ? 'warn' : /정상|양호/.test(t || '') ? 'ok' : 'na';
 const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</span>` : '';
 
-const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, cycleStart: 9, payDay: 21 };
+const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, hanaDay: 13, kbDay: 14, overdraftLimit: 2500000 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
   '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
   '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
@@ -116,10 +118,19 @@ function allCats() { return [...new Set([...Object.keys(state.rules).filter(k =>
 function subsOf(cat) { return [...new Set(state.tx.filter(t => t.kind === 'expense' && catOf(t) === cat && subOf(t)).map(subOf))].sort((a, b) => a.localeCompare(b, 'ko')); }
 
 // ---------- card billing cycle ----------
-function cycleKey(iso) { const [y, m, d] = iso.split('-').map(Number); let py = y, pm = m + (d >= state.settings.cycleStart ? 1 : 0); if (pm > 12) { pm = 1; py++; } return `${py}-${p2(pm)}`; }
-function cycleRange(key) {
-  const [py, pm] = key.split('-').map(Number), S = state.settings; let sy = py, sm = pm - 1; if (sm < 1) { sm = 12; sy--; }
-  return { start: `${sy}-${p2(sm)}-${p2(S.cycleStart)}`, end: isoOf(Date.UTC(py, pm - 1, S.cycleStart - 1) / 86400000), pay: `${key}-${p2(S.payDay)}` };
+const PAY_SCHEDULE = [   // 전환기 카드 결제 일정 (이후는 매달 전월 1일~말일 → 하나 hanaDay일·국민 kbDay일)
+  { pays: ['2026-11-21'], start: '2026-10-09', end: '2026-11-08' },
+  { pays: ['2026-12-21'], start: '2026-11-09', end: '2026-12-08' },
+  { pays: ['2027-01-13', '2027-01-14'], start: '2026-12-09', end: '2026-12-31' },
+];
+function nextPayment(today) {   // 마지막 출금일이 오늘 이상인 첫 결제. 반환: { pays: [{ d, label }], start, end }
+  const S = state.settings, list = PAY_SCHEDULE.map(e => ({ start: e.start, end: e.end, pays: e.pays.map((d, i) => ({ d, label: e.pays.length > 1 ? ['하나', '국민'][i] : '결제' })) }));
+  for (let k = 1; k <= 60; k++) {   // 2027-02부터 매달: 전월 1일~말일 사용분
+    const y = 2027 + Math.floor(k / 12), m = k % 12 + 1, py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+    list.push({ start: `${py}-${p2(pm)}-01`, end: isoOf(Date.UTC(y, m - 1, 0) / 86400000), pays: [{ d: `${y}-${p2(m)}-${p2(S.hanaDay)}`, label: '하나' }, { d: `${y}-${p2(m)}-${p2(S.kbDay)}`, label: '국민' }] });
+  }
+  list.forEach(e => e.pays.sort((a, b) => a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
+  return list.find(e => e.pays[e.pays.length - 1].d >= today) || list[list.length - 1];
 }
 
 // ---------- forms ----------
@@ -265,8 +276,8 @@ function renderHistoryBody() {
   });
 }
 
-function meter(label, value, limit, right) {
-  const r = limit ? value / limit : 0, c = r > 1 ? 'over' : r > 0.8 ? 'mid' : '';
+function meter(label, value, limit, right, cls) {   // cls: 막대 색을 직접 지정할 때 ('' | 'mid' | 'over')
+  const r = limit ? value / limit : 0, c = cls != null ? cls : r > 1 ? 'over' : r > 0.8 ? 'mid' : '';
   return `<div class="meter"><div class="top"><span>${label}</span><span>${right}</span></div><div class="prog"><span class="${c}" style="width:${Math.min(100, r * 100).toFixed(1)}%"></span></div></div>`;
 }
 function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마다 고정 폭 칸 → 많으면 가로 스크롤
@@ -290,8 +301,8 @@ function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마�
 }
 
 function saveAScroll() {   // 분석 탭의 내부 스크롤 영역 위치 저장 (화면에 분석 탭이 그려져 있을 때만)
-  const cw = $('#mChartWrap'), tw = $('#mTableWrap'), kw = $('#cTableWrap'), dw = $('#dListWrap');
-  if (cw && tw && kw) state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop, c: kw.scrollTop, d: dw ? dw.scrollTop : 0, dk: dw ? dw.dataset.key : '' };
+  const cw = $('#mChartWrap'), tw = $('#mTableWrap');
+  if (cw && tw) state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop };
 }
 function viewAnalysis() {
   const S = state.settings, today = todayISO(), spend = state.tx.filter(isSpend);
@@ -315,33 +326,50 @@ function viewAnalysis() {
   if (!state.aMonth || !B[state.aMonth]) state.aMonth = B[curKey] ? curKey : ([...keys].reverse().find(k => k <= curKey) || keys[0]);   // 미래 달(할부)은 기본 선택하지 않음
   let h = '';
 
-  // --- next card payment ---
-  const cyc = {};
-  spend.filter(t => t.pay === 'card').forEach(t => {
-    const k = cycleKey(t.tx_date), c = cyc[k] ??= { use: 0, n: 0, 고정: 0, 변동: 0, 비정기: 0, deliv: 0, delivAmt: 0, booze: 0 };
-    c.use += t.amount; c.n++; c[t._n] += t.amount; if (/배달/.test(t.cls)) { c.deliv++; c.delivAmt += t.amount; } if (/술\/유흥/.test(t.cls)) c.booze += t.amount;
-  });
-  const ckeys = Object.keys(cyc).sort(), nextKey = cycleKey(today), nc = cyc[nextKey] || { use: 0, n: 0, 고정: 0, 변동: 0, 비정기: 0, deliv: 0, delivAmt: 0, booze: 0 };
-  const r = cycleRange(nextKey), total = dnum(r.end) - dnum(r.start) + 1, el = Math.min(Math.max(dnum(today), dnum(r.start)), dnum(r.end)) - dnum(r.start) + 1;
-  const est = el >= 5 && today < r.end ? nc.use / el * total : null;
-  const dday = Math.ceil(dnum(r.pay) - dnum(today));
-  h += `<div class="card"><h2>다음 카드 결제 <small>${r.pay.replace(/-/g, '.')} · D-${Math.max(0, dday)} · 사용분 ${r.start.replace(/-/g, '.')} ~ ${r.end.replace(/-/g, '.')}</small></h2>
-    ${meter('청구 예정액 / 카드 한도', nc.use, S.cardLimit, `<b>${won(nc.use)}</b> / ${won(S.cardLimit)} ${tag(nc.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
-    <table><tr><th>건수</th><th>고정</th><th>변동</th><th>비정기</th><th>배달</th><th>술·유흥</th></tr><tr><td>${nc.n}건</td><td>${won(nc['고정'])}</td><td>${won(nc['변동'])}</td><td>${won(nc['비정기'])}</td><td>${nc.deliv}건 ${won(nc.delivAmt)}</td><td>${won(nc.booze)}</td></tr></table>
-    ${est != null ? `<div class="note">${el}/${total}일 경과 · 이 속도면 청구액 약 <b>${won(est)}</b> (한도의 ${pct(est / S.cardLimit)})</div>` : ''}</div>`;
+  // --- 현금 점검 (다음 카드 결제 vs 통장 잔액) ---
+  const od = Number(S.overdraftLimit) || 0, np = nextPayment(today), pds = np.pays.map(p => p.d), nd = pds.find(d => d >= today) || pds[pds.length - 1];
+  const dday = Math.max(0, Math.ceil(dnum(nd) - dnum(today))), mdOf = iso => `${+iso.slice(5, 7)}.${+iso.slice(8, 10)}`, dd = x => x.replace(/-/g, '.');
+  const bill0 = spend.filter(t => t.pay === 'card' && t.tx_date >= np.start && t.tx_date <= np.end).reduce((s, t) => s + t.amount, 0);
+  const inProg = today < np.end, ptotal = dnum(np.end) - dnum(np.start) + 1, el = Math.min(Math.max(dnum(today), dnum(np.start)), dnum(np.end)) - dnum(np.start) + 1;
+  const est = inProg && el >= 5 ? bill0 / el * ptotal : null, bill = est != null ? est : bill0, lbl = inProg ? ' (예상)' : '';
+  let bal = null;   // 통장 잔액: 직접 기록(bankSnaps)과 자산 시트 중 날짜가 더 최근인 것
+  const bSnaps = [...(S.bankSnaps || [])].sort((a, b) => a.date < b.date ? -1 : 1), bs = bSnaps[bSnaps.length - 1];
+  if (bs && !isNaN(Number(bs.balance))) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}` };
+  if (state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (!bal || ad > bal.date) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
+  const has21 = np.pays.some(p => p.d.slice(8, 10) === '21'), [ty, tm] = today.split('-').map(Number);
+  const mid21 = !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pds[0]; });
+  let cashRows = '<div class="note">통장 잔액을 기록하세요.</div>';
+  if (bal) {
+    const avail = bal.v + od, after = bal.v - bill, ago = Math.round(dnum(today) - dnum(bal.date));
+    const verdict = after >= 0 ? tag('적절' + lbl, 'ok') : after >= -od ? tag('위험' + lbl, 'warn') : tag('파산' + lbl, 'bad');
+    const mLim = avail > 0 ? avail : (bill > 0 ? bill / 2 : 0);   // 인출 가능액이 0 이하이면 막대를 '초과'로 가득 채움
+    cashRows = `${meter('청구 예정액 / 인출 가능액', bill, mLim, `<b>${won(bill)}</b> / ${won(avail)} ${verdict}`, after >= 0 ? '' : after >= -od ? 'mid' : 'over')}
+      <table><tr><td>청구 예정액${lbl}</td><td><b>${won(bill)}</b></td></tr>
+      <tr><td>통장 잔액 <span class="note">${bal.src}</span></td><td><b>${won(bal.v)}</b></td></tr>
+      <tr><td>통장 인출 가능액 <span class="note">잔액 + 마이너스 한도 ${won(od)}</span></td><td><b>${won(avail)}</b></td></tr>
+      <tr><td>인출 후 통장 잔액(예상)</td><td><b class="${after < 0 ? 'neg' : ''}">${won(after)}</b></td></tr>
+      <tr><td>판정</td><td>${verdict}</td></tr></table>
+      ${ago > 10 ? `<div class="note" style="color:var(--warn)">잔액 기록이 ${ago}일 전이에요. 새로 기록하세요.</div>` : ''}`;
+  }
+  h += `<div class="card"><h2>현금 점검 <small>${np.pays.map(p => `${mdOf(p.d)} ${p.label}`).join(' · ')} · D-${dday} · 사용분 ${dd(np.start)} ~ ${dd(np.end)}</small></h2>
+    ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
+    ${cashRows}
+    ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
+    <div class="row2 snapRow" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="bkDate" type="date" value="${today}"></div><div><label class="f">통장 잔액(원)</label><input id="bkBal" inputmode="text" placeholder="예: -1416257"></div></div>
+    <button class="btn sec" data-act="saveBankSnap">잔액 기록</button></div>`;
 
   // --- monthly ---
   const mrows = keys.map(k => ({ k, ...B[k], inc: incBy[k] || 0, label: k.slice(2) }));
   const sth = 'position:sticky;top:0;background:var(--card)';
   h += `<div class="card"><h2>월별 수입지출 <small>카드대금·저축·이체 제외 · 누르면 아래 월 상세가 바뀝니다</small></h2>${barChart(mrows, S.monthLimit, state.aMonth)}
-    <div style="height:10px"></div><div id="mTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">월</th><th style="${sth}">지출 계</th><th style="${sth}">수입</th><th style="${sth}">판정</th><th style="${sth}">배달</th><th style="${sth}">배달 금액</th><th style="${sth}">술·유흥</th></tr>
+    <div style="height:10px"></div><div id="mTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">월</th><th style="${sth}">지출 계</th><th style="${sth}">수입</th><th style="${sth}">판정 <span class="tip" tabindex="0" role="button" aria-label="판정 설명">ⓘ<span class="tipbox">그 달 지출 합계(카드대금·저축·이체 제외)가 월 생활비 한도(${won(S.monthLimit)}) 이하면 정상, 넘으면 ⚠ 초과. 진행 중이거나 일부 기간만 있는 달은 참고용이에요.</span></span></th><th style="${sth}">배달</th><th style="${sth}">배달 금액</th><th style="${sth}">술·유흥</th></tr>
     ${[...mrows].reverse().map(m => { const sel = m.k === state.aMonth; return `<tr data-month="${m.k}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${m.k}<span class="note">${note(m.k)}</span></td><td><b>${won(m.total)}</b></td><td>${won(incBy[m.k] || 0)}</td><td>${tag(m.total > S.monthLimit ? '⚠ 초과' : '정상')}</td><td>${m.deliv}건</td><td>${won(m.delivAmt)}</td><td>${won(m.booze)}</td></tr>`; }).join('')}</table></div>
     <div class="note">진행 중이거나 일부 기간만 있는 달은 한도 판정이 의미 없습니다.</div></div>`;
 
   // --- month detail ---
   const cur = B[state.aMonth], cats = Object.entries(cur.cats).sort((a, b) => b[1] - a[1]);
   const irreg = cur.items.filter(t => t._n === '비정기').sort((a, b) => a.tx_date < b.tx_date ? 1 : -1), top = [...cur.items].sort((a, b) => b.amount - a.amount).slice(0, 8);
-  const im = incM[state.aMonth];
+  const im = incM[state.aMonth], cardUse = cur.items.filter(t => t.pay === 'card').reduce((s, t) => s + t.amount, 0);
   let incSec = '<div class="note">이번 달 수입 기록이 없습니다.</div>';
   if (im) {
     const itypes = Object.entries(im.types).sort((a, b) => b[1] - a[1]), itop = [...im.items].sort((a, b) => b.amount - a.amount).slice(0, 8);
@@ -353,6 +381,7 @@ function viewAnalysis() {
     <div class="secT">수입</div>
     ${incSec}
     <div class="secT">지출</div>
+    ${meter('카드 사용액 / 카드 한도 (다음 달 13·14일 청구)', cardUse, S.cardLimit, `<b>${won(cardUse)}</b> / ${won(S.cardLimit)} ${tag(cardUse > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
     ${meter('월 생활비 한도', cur.total, S.monthLimit, `<b>${won(cur.total)}</b> / ${won(S.monthLimit)}${cur.total > S.monthLimit ? ' · ' + won(cur.total - S.monthLimit) + ' 초과' : ''}`)}
     ${meter('배달 (월 한도 횟수)', cur.deliv, S.deliveryLimit, `<b>${cur.deliv}건</b> · ${won(cur.delivAmt)}`)}
     <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar go" data-cat="${esc(c)}" style="cursor:pointer"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
@@ -416,39 +445,10 @@ function viewAnalysis() {
       ${tb === 'dj' ? djHtml : onHtml}</div>`;
   }
 
-  // --- cycles ---
-  const cKeysAll = [...new Set([...ckeys, nextKey])].sort().reverse();
-  if (!state.cSel || !cKeysAll.includes(state.cSel)) state.cSel = nextKey;
-  const cSel = state.cSel;
-  h += `<div class="card"><h2>카드 청구주기별 <small>${S.cycleStart}일 ~ 익월 ${S.cycleStart - 1}일 사용분이 ${S.payDay}일에 결제 · 행을 누르면 아래 청구주기 상세가 바뀝니다</small></h2><div id="cTableWrap" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">결제일</th><th style="${sth}">사용액</th><th style="${sth}">판정</th><th style="${sth}">건수</th><th style="${sth}">변동</th><th style="${sth}">비정기</th><th style="${sth}">배달 건수</th><th style="${sth}">배달 금액</th><th style="${sth}">술·유흥</th></tr>
-    ${[...ckeys].reverse().map(k => { const c = cyc[k], up = k === nextKey, sel = k === cSel; return `<tr data-cycle="${k}" style="cursor:pointer;${sel ? 'background:var(--bg);font-weight:700' : ''}"><td style="${up ? 'box-shadow:inset 3px 0 0 var(--accent);' : ''}${sel || up ? 'font-weight:700' : ''}">${cycleRange(k).pay.replace(/-/g, '.')}</td><td><b>${won(c.use)}</b></td><td>${tag(c.use > S.cardLimit ? '⚠ 한도 초과' : '정상')}</td><td>${c.n}</td><td>${won(c['변동'])}</td><td>${won(c['비정기'])}</td><td>${c.deliv}건</td><td>${won(c.delivAmt)}</td><td>${won(c.booze)}</td></tr>`; }).join('')}</table></div>
-    <div class="note">카드 한도 ${won(S.cardLimit)} (설정에서 변경)</div></div>`;
-
-  // --- cycle detail ---
-  {
-    const cr = cycleRange(cSel), dd = x => x.replace(/-/g, '.');
-    const ct = spend.filter(t => t.pay === 'card' && cycleKey(t.tx_date) === cSel).sort((a, b) => a.tx_date < b.tx_date ? -1 : a.tx_date > b.tx_date ? 1 : ((a.created_at || '') < (b.created_at || '') ? -1 : 1));
-    const cuse = ct.reduce((s, t) => s + t.amount, 0), cdl = ct.filter(t => /배달/.test(t.cls)), cdlAmt = cdl.reduce((s, t) => s + t.amount, 0);
-    const ccat = {}; ct.forEach(t => { const c = catOf(t); ccat[c] = (ccat[c] || 0) + t.amount; });
-    const ccs = Object.entries(ccat).sort((a, b) => b[1] - a[1]), ctop = [...ct].sort((a, b) => b.amount - a.amount).slice(0, 8);
-    const cirr2 = ct.filter(t => t._n === '비정기').sort((a, b) => a.tx_date < b.tx_date ? 1 : -1), cirrAmt = cirr2.reduce((s, t) => s + t.amount, 0);
-    h += `<div class="card" id="cDetail"><h2>청구주기 상세 <small><select id="cSel" style="width:auto;font-size:13px;padding:4px 8px">${cKeysAll.map(k => { const rg = cycleRange(k); return `<option value="${k}" ${k === cSel ? 'selected' : ''}>${dd(rg.pay)} 결제 (${rg.start.slice(5).replace('-', '.')}~${rg.end.slice(5).replace('-', '.')})</option>`; }).join('')}</select></small></h2>
-      <div class="note" style="margin:0 0 6px">사용 기간 ${dd(cr.start)} ~ ${dd(cr.end)} · 결제일 ${dd(cr.pay)}</div>
-      ${meter('청구 예정액 / 카드 한도', cuse, S.cardLimit, `<b>${won(cuse)}</b> / ${won(S.cardLimit)} ${tag(cuse > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
-      ${meter('배달 (월 한도 횟수)', cdl.length, S.deliveryLimit, `<b>${cdl.length}건</b> · ${won(cdlAmt)}`)}
-      ${ct.length ? `<div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${ccs.map(([c, v]) => `<div class="hbar"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / ccs[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cuse)}</span></div>`).join('')}</div>
-        <div><div class="note" style="margin:0 0 6px">큰 지출 TOP 8</div><table>${ctop.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div></div>
-      <div class="note" style="margin:14px 0 6px">비정기 ${cirr2.length}건 · ${won(cirrAmt)}</div>
-      ${cirr2.length ? `<table>${cirr2.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${esc(t.cls)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table>` : '<div class="note">없음</div>'}
-      <div class="note" style="margin:14px 0 6px">전체 내역 (날짜순)</div>
-      <div id="dListWrap" data-key="${cSel}" style="max-height:320px;overflow-y:auto"><table><tr><th style="${sth}">날짜</th><th style="${sth}">사용처</th><th style="${sth}">분류</th><th style="${sth}">금액</th></tr>
-        ${ct.map(t => `<tr><td>${mmdd(t.tx_date)}</td><td style="text-align:left">${esc(t.place || t.memo)}</td><td style="text-align:left">${esc((t.cls || '미분류').replace('>', ' › '))}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div>
-      <div class="note">합계 ${won(cuse)} · ${ct.length}건 · 첫 거래 ${mmdd(ct[0].tx_date)} · 마지막 거래 ${mmdd(ct[ct.length - 1].tx_date)}</div>` : '<div class="note">이 청구주기에 카드 사용 내역이 없습니다.</div>'}</div>`;
-  }
   saveAScroll();   // 다시 그리기 전 스크롤 위치 저장
   const hadScroll = !!state.aScroll;
   view().innerHTML = h;
-  const cw = $('#mChartWrap'), tw = $('#mTableWrap'), kw = $('#cTableWrap');
+  const cw = $('#mChartWrap'), tw = $('#mTableWrap');
   const topOf = (wrap, row) => {
     const th = wrap.querySelector('th'), hh = th ? th.offsetHeight : 0, want = Math.max(0, row.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop - hh);
     // 선택한 행 아래에 행이 적으면 맨 위까지 올라오지 못하므로, 필요한 만큼 빈 여백을 덧붙인다
@@ -462,16 +462,15 @@ function viewAnalysis() {
     cw.scrollLeft = Math.max(0, right - cw.clientWidth);
     const row = tw.querySelector(`tr[data-month="${state.aMonth}"]`); if (row) tw.scrollTop = topOf(tw, row);
   };
-  const alignC = () => { const row = kw.querySelector(`tr[data-cycle="${state.cSel}"]`); if (row) kw.scrollTop = topOf(kw, row); };
   if (hadScroll) {
     const keep = (wrap, top) => {   // 정렬 때 붙였던 빈 여백을 다시 그린 뒤에도 유지 (스크롤이 튀지 않게)
       const lack = top - (wrap.scrollHeight - wrap.clientHeight);
       if (lack > 0) { const sp = document.createElement('div'); sp.className = 'tspace'; sp.style.height = Math.ceil(lack) + 'px'; wrap.appendChild(sp); }
       wrap.scrollTop = top;
     };
-    cw.scrollLeft = state.aScroll.l || 0; keep(tw, state.aScroll.t || 0); keep(kw, state.aScroll.c || 0); const dw = $('#dListWrap'); if (dw) dw.scrollTop = dw.dataset.key === state.aScroll.dk ? (state.aScroll.d || 0) : 0; }
-  else { alignM(); alignC(); state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop, c: kw.scrollTop, d: 0, dk: '' }; }   // 처음에는 선택한 달·청구주기가 보이도록 정렬
-  if (state.aAlign === 'month') alignM(); else if (state.aAlign === 'cycle') alignC();
+    cw.scrollLeft = state.aScroll.l || 0; keep(tw, state.aScroll.t || 0); }
+  else { alignM(); state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop }; }   // 처음에는 선택한 달이 보이도록 정렬
+  if (state.aAlign === 'month') alignM();
   state.aAlign = null;
   const pick = e => {
     const el = e.target.closest('[data-month]'); if (!el || !B[el.dataset.month]) return;
@@ -479,12 +478,6 @@ function viewAnalysis() {
     const d = $('#mDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
   cw.onclick = pick; tw.onclick = pick;
-  kw.onclick = e => {
-    const el = e.target.closest('[data-cycle]'); if (!el) return;
-    state.cSel = el.dataset.cycle; viewAnalysis();
-    const d = $('#cDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  };
-  $('#cSel').onchange = e => { state.cSel = e.target.value; state.aAlign = 'cycle'; viewAnalysis(); };
   view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: ['수입>' + el.dataset.inc], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
@@ -499,7 +492,8 @@ function viewSettings() {
   view().innerHTML = `<div class="card"><h2>한도·카드 설정</h2><div class="row2">
       <div><label class="f">월 생활비 한도(원)</label><input id="sMonth" inputmode="numeric" value="${S.monthLimit}"></div><div><label class="f">카드 사용 한도(원)</label><input id="sCard" inputmode="numeric" value="${S.cardLimit}"></div>
       <div><label class="f">배달 월 한도(회)</label><input id="sDel" inputmode="numeric" value="${S.deliveryLimit}"></div><div><label class="f">술·유흥 연 한도(원)</label><input id="sBooze" inputmode="numeric" value="${S.boozeYear}"></div>
-      <div><label class="f">카드 청구 시작일(일)</label><input id="sCs" inputmode="numeric" value="${S.cycleStart}"></div><div><label class="f">카드 결제일(일)</label><input id="sPd" inputmode="numeric" value="${S.payDay}"></div></div>
+      <div><label class="f">하나카드 결제일(일)</label><input id="sHana" inputmode="numeric" value="${S.hanaDay}"></div><div><label class="f">국민카드 결제일(일)</label><input id="sKb" inputmode="numeric" value="${S.kbDay}"></div>
+      <div><label class="f">마이너스 인출 한도(원)</label><input id="sOd" inputmode="numeric" value="${S.overdraftLimit}"></div></div>
     <button class="btn" data-act="saveSettings">설정 저장</button></div>
 
     <div class="card"><h2>분류 규칙 <small>대분류(또는 '대분류>소분류') → 성격</small></h2>
@@ -645,13 +639,14 @@ function viewAsset() {
   // ---- asset composition ----
   const comp = [
     ['청년도약계좌', L.doyak, 'var(--c1)'], ['주택청약저축', L.cheongyak, 'var(--c2)'], ['연금저축', L.pension, 'var(--c3)'],
-    ['현금성(생활)', L.cash, 'var(--c4)'], ['증권 예수금', L.deposit, 'var(--c5)'], ['투자 버킷', L.bucket, 'var(--c6)']
+    ['현금성(입출금통장)', L.cash, 'var(--c4)'], ['증권 예수금', L.deposit, 'var(--c5)'], ['투자 버킷', L.bucket, 'var(--c6)']
   ];
   const gross = comp.reduce((s, c) => s + (c[1] || 0), 0);
   h += `<div class="card"><h2>자산 구성 <small>총자산 ${won(gross)} − 부채 ${won(Math.abs(L.debt || 0))}</small></h2>
     <div class="stack">${comp.map(c => `<span style="width:${((c[1] || 0) / gross * 100).toFixed(2)}%;background:${c[2]}"></span>`).join('')}</div>
     <table>${comp.map(c => `<tr><td><span class="legend"><span><i style="background:${c[2]}"></i></span></span>${c[0]}</td><td>${won(c[1])}</td><td>${aPct((c[1] || 0) / gross)}</td></tr>`).join('')}
     <tr><td><span class="legend"><span><i style="background:var(--debt)"></i></span></span>부채 (마이너스통장)</td><td class="neg">${won(L.debt)}</td><td></td></tr></table>
+    ${(L.debt || 0) > 0 ? `<div class="banner warn" style="margin-top:10px">월별기록 G열(부채)에 플러스 금액 ${won(L.debt)}이 들어 있어요. 마이너스통장이 플러스가 되면 G열은 0으로 두고, 그 금액은 E열 '현금성(입출금통장)'에 더해 적어 주세요.</div>` : ''}
     <div class="note" style="margin-top:10px">투자자산(시장 노출) ${won(aNum(aS('대시보드', 'B17')))} (${aPct(aNum(aS('대시보드', 'C17')))}) · 비투자자산 ${won(aNum(aS('대시보드', 'B18')))} (${aPct(aNum(aS('대시보드', 'C18')))})</div></div>`;
 
   // ---- trend ----
@@ -752,8 +747,8 @@ const handlers = {
   hMore: () => { state.hLimit = (state.hLimit || 200) + 200; renderHistoryBody(); },
   saveSettings: () => run(async () => {
     const n = id => parseInt($(id).value.replace(/\D/g, ''), 10);
-    const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), cycleStart: n('#sCs'), payDay: n('#sPd') };
-    if (Object.values(s).some(v => !v && v !== 0)) throw new Error('숫자를 확인하세요'); if (s.cycleStart < 2 || s.cycleStart > 28 || s.payDay < 1 || s.payDay > 28) throw new Error('일자는 청구 시작 2~28, 결제일 1~28');
+    const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), hanaDay: n('#sHana'), kbDay: n('#sKb'), overdraftLimit: n('#sOd') };
+    if (Object.values(s).some(v => !v && v !== 0)) throw new Error('숫자를 확인하세요'); if (s.hanaDay < 1 || s.hanaDay > 28 || s.kbDay < 1 || s.kbDay > 28) throw new Error('카드 결제일은 1~28일로 입력하세요'); if (s.overdraftLimit < 0) throw new Error('마이너스 인출 한도는 0 이상이어야 해요');
     const merged = { ...state.settings, ...s };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('설정 저장됨');
   }),
@@ -764,6 +759,14 @@ const handlers = {
     if (isNaN(balance)) throw new Error('잔액을 숫자로 입력하세요');
     const onnuriSnaps = [...(state.settings.onnuriSnaps || []).filter(s => s.date !== date), { date, balance }].sort((a, b) => a.date < b.date ? -1 : 1).slice(-24);
     const merged = { ...state.settings, onnuriSnaps };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('잔액 기록됨'); viewAnalysis();
+  }),
+  saveBankSnap: () => run(async () => {
+    const date = $('#bkDate').value, v = $('#bkBal').value.replace(/[,\s]/g, '');
+    if (!date) throw new Error('날짜를 입력하세요');
+    if (!/^-?\d+$/.test(v)) throw new Error('잔액을 숫자로 입력하세요 (마이너스는 - 로)');
+    const bankSnaps = [...(state.settings.bankSnaps || []).filter(s => s.date !== date), { date, balance: parseInt(v, 10) }].sort((a, b) => a.date < b.date ? -1 : 1).slice(-24);
+    const merged = { ...state.settings, bankSnaps };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('잔액 기록됨'); viewAnalysis();
   }),
   saveSnap: () => run(async () => {
@@ -1184,6 +1187,24 @@ function impPropagate(x) {   // 같은 사용처의 다른 새 내역(사용자�
   });
 }
 function renderImportKeepScroll() { const s = $('#modal .sheet'), y = s.scrollTop; renderImport(); $('#modal .sheet').scrollTop = y; }
+
+// ---------- ⓘ 툴팁 (본문 밖 fixed 박스라 스크롤 영역에 잘리지 않음) ----------
+const tipEl = () => { let b = $('#tipFloat'); if (!b) { b = document.createElement('div'); b.id = 'tipFloat'; document.body.appendChild(b); } return b; };
+function tipPlace(t) {
+  const b = tipEl(), r = t.getBoundingClientRect(); b.textContent = t.querySelector('.tipbox').textContent; b.classList.add('on');
+  const w = b.offsetWidth, h = b.offsetHeight; let y = r.bottom + 6; if (y + h > innerHeight - 8) y = Math.max(8, r.top - h - 6);
+  b.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)) + 'px'; b.style.top = y + 'px';
+}
+function tipHide(all) { const b = $('#tipFloat'); if (b) b.classList.remove('on'); if (all) document.querySelectorAll('.tip.open').forEach(x => x.classList.remove('open')); }
+document.addEventListener('click', e => {   // 캡처 단계: ⓘ를 누르면 행·월 선택 등 다른 클릭 처리로 넘어가지 않게 막는다
+  const t = e.target.closest && e.target.closest('.tip');
+  if (!t) { tipHide(true); return; }
+  e.stopPropagation(); const was = t.classList.contains('open'); tipHide(true); if (!was) { t.classList.add('open'); tipPlace(t); }
+}, true);
+document.addEventListener('mouseover', e => { const t = e.target.closest && e.target.closest('.tip'); if (t && !t.classList.contains('open')) tipPlace(t); });
+document.addEventListener('mouseout', e => { const t = e.target.closest && e.target.closest('.tip'); if (t && !t.classList.contains('open') && !t.contains(e.relatedTarget)) tipHide(false); });
+document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('tip')) { e.preventDefault(); e.target.click(); } });
+window.addEventListener('scroll', () => tipHide(true), true);
 
 // ---------- boot ----------
 document.addEventListener('click', e => {
