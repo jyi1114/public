@@ -22,7 +22,7 @@ const loadScript = src => new Promise((res, rej) => { const s = document.createE
 const statusCls = t => /⚠|초과|부족|위험/.test(t || '') ? 'warn' : /정상|양호/.test(t || '') ? 'ok' : 'na';
 const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</span>` : '';
 
-const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, hanaDay: 13, kbDay: 14, overdraftLimit: 2500000 };
+const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, payDays: [{ from: '2026-11', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
   '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
   '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
@@ -118,20 +118,25 @@ function allCats() { return [...new Set([...Object.keys(state.rules).filter(k =>
 function subsOf(cat) { return [...new Set(state.tx.filter(t => t.kind === 'expense' && catOf(t) === cat && subOf(t)).map(subOf))].sort((a, b) => a.localeCompare(b, 'ko')); }
 
 // ---------- card billing cycle ----------
-const PAY_SCHEDULE = [   // 전환기 카드 결제 일정 (이후는 매달 전월 1일~말일 → 하나 hanaDay일·국민 kbDay일)
-  { pays: ['2026-11-21'], start: '2026-10-09', end: '2026-11-08' },
-  { pays: ['2026-12-21'], start: '2026-11-09', end: '2026-12-08' },
-  { pays: ['2027-01-13', '2027-01-14'], start: '2026-12-09', end: '2026-12-31' },
-];
-function nextPayment(today) {   // 마지막 출금일이 오늘 이상인 첫 결제. 반환: { pays: [{ d, label }], start, end }
-  const S = state.settings, list = PAY_SCHEDULE.map(e => ({ start: e.start, end: e.end, pays: e.pays.map((d, i) => ({ d, label: e.pays.length > 1 ? ['하나', '국민'][i] : '결제' })) }));
-  for (let k = 1; k <= 60; k++) {   // 2027-02부터 매달: 전월 1일~말일 사용분
-    const y = 2027 + Math.floor(k / 12), m = k % 12 + 1, py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
-    list.push({ start: `${py}-${p2(pm)}-01`, end: isoOf(Date.UTC(y, m - 1, 0) / 86400000), pays: [{ d: `${y}-${p2(m)}-${p2(S.hanaDay)}`, label: '하나' }, { d: `${y}-${p2(m)}-${p2(S.kbDay)}`, label: '국민' }] });
-  }
-  list.forEach(e => e.pays.sort((a, b) => a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
-  return list.find(e => e.pays[e.pays.length - 1].d >= today) || list[list.length - 1];
+const PAY_DAYS_OK = [1, 5, 7, 8, 10, 12, 13, 14, 15, 17, 18, 20, 21, 23];   // 하나카드 결제일 표(일시불)에 있는 결제일
+const addM = (ym, k) => { const [y, m] = ym.split('-').map(Number), n = y * 12 + m - 1 + k; return `${Math.floor(n / 12)}-${p2(n % 12 + 1)}`; };
+const ymDay = (ym, d) => { const [y, m] = ym.split('-').map(Number); return `${ym}-${p2(Math.min(d, new Date(Date.UTC(y, m, 0)).getUTCDate()))}`; };   // 그 달 말일을 넘으면 말일로
+const payDaysOf = () => { const l = (state.settings.payDays || []).filter(e => e && /^\d{4}-\d{2}$/.test(e.from) && PAY_DAYS_OK.includes(Number(e.day))); return (l.length ? l : DEFAULT_SETTINGS.payDays).map(e => ({ from: e.from, day: Number(e.day) })).sort((a, b) => a.from < b.from ? -1 : a.from > b.from ? 1 : 0); };
+function periodStart(ym, day) {   // 결제월 ym·결제일 day의 청구 기간 시작일 (하나카드 일시불 표)
+  return day <= 12 ? ymDay(addM(ym, -2), day + 18) : day === 13 ? ymDay(addM(ym, -1), 1) : ymDay(addM(ym, -1), day - 12);
 }
+function periodEnd(ym, day) {   // 청구 기간 종료일: 12일 이하 전월 (day+17)일 / 13일 전월 말일 / 14일 이상 당월 (day-13)일
+  return day <= 12 ? ymDay(addM(ym, -1), day + 17) : day === 13 ? isoOf(dnum(ym + '-01') - 1) : ymDay(ym, day - 13);
+}
+function payments(today) {   // 첫 결제월부터 (오늘 달 + 2개월)까지: [{ ym, pay, start, end }]
+  const pd = payDaysOf(), last = addM(today.slice(0, 7), 2), list = [];
+  for (let ym = pd[0].from, k = 0; (ym <= last || !list.length) && k < 240; ym = addM(ym, 1), k++) {
+    const day = pd.filter(e => e.from <= ym).pop().day, prev = list[list.length - 1];
+    list.push({ ym, pay: ymDay(ym, day), start: prev ? isoOf(dnum(prev.end) + 1) : periodStart(ym, day), end: periodEnd(ym, day) });
+  }
+  return list;
+}
+const nextPayIdx = (list, today) => { const i = list.findIndex(p => p.pay > today); return i < 0 ? list.length - 1 : i; };   // 결제일 당일에는 다음 결제가 기본 (21일 루틴은 출금 후 잔액을 기록)
 
 // ---------- forms ----------
 function formHtml(p, t) {
@@ -327,21 +332,23 @@ function viewAnalysis() {
   let h = '';
 
   // --- 현금 점검 (다음 카드 결제 vs 통장 잔액) ---
-  const od = Number(S.overdraftLimit) || 0, np = nextPayment(today), pds = np.pays.map(p => p.d), nd = pds.find(d => d >= today) || pds[pds.length - 1];
-  const dday = Math.max(0, Math.ceil(dnum(nd) - dnum(today))), mdOf = iso => `${+iso.slice(5, 7)}.${+iso.slice(8, 10)}`, dd = x => x.replace(/-/g, '.');
-  const bill0 = spend.filter(t => t.pay === 'card' && t.tx_date >= np.start && t.tx_date <= np.end).reduce((s, t) => s + t.amount, 0);
-  const inProg = today < np.end, ptotal = dnum(np.end) - dnum(np.start) + 1, el = Math.min(Math.max(dnum(today), dnum(np.start)), dnum(np.end)) - dnum(np.start) + 1;
+  const od = Number(S.overdraftLimit) || 0, pl = payments(today), di = nextPayIdx(pl, today), opts = pl.slice(0, di + 1);
+  const pc = opts.find(p => p.ym === state.pSel) || opts[di], ci = pl.indexOf(pc), prev = pl[ci - 1], isDef = ci === di, past = pc.pay <= today && !isDef, upc = !past;
+  const dday = Math.max(0, Math.ceil(dnum(pc.pay) - dnum(today))), mdOf = iso => `${+iso.slice(5, 7)}.${+iso.slice(8, 10)}`, dd = x => x.replace(/-/g, '.');
+  const bill0 = spend.filter(t => t.pay === 'card' && t.tx_date >= pc.start && t.tx_date <= pc.end).reduce((s, t) => s + t.amount, 0);
+  const inProg = today < pc.end, ptotal = dnum(pc.end) - dnum(pc.start) + 1, el = Math.min(Math.max(dnum(today), dnum(pc.start)), dnum(pc.end)) - dnum(pc.start) + 1;
   const est = inProg && el >= 5 ? bill0 / el * ptotal : null, bill = est != null ? est : bill0, lbl = inProg ? ' (예상)' : '';
-  let bal = null;   // 통장 잔액: 직접 기록(bankSnaps)과 자산 시트 중 날짜가 더 최근인 것
-  const bSnaps = [...(S.bankSnaps || [])].sort((a, b) => a.date < b.date ? -1 : 1), bs = bSnaps[bSnaps.length - 1];
-  if (bs && !isNaN(Number(bs.balance))) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}` };
-  if (state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (!bal || ad > bal.date) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
-  const has21 = np.pays.some(p => p.d.slice(8, 10) === '21'), [ty, tm] = today.split('-').map(Number);
-  const mid21 = !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pds[0]; });
-  let cashRows = '<div class="note">통장 잔액을 기록하세요.</div>';
+  let bal = null;   // 통장 잔액: 이 결제 기간(앞 결제일 ≤ 날짜 < 이번 결제일) 안의 기록 중 최신 (결제일 당일 기록은 다음 결제 몫)
+  const inWin = d => (!prev || d >= prev.pay) && d < pc.pay;
+  const bs = [...(S.bankSnaps || [])].filter(s => inWin(s.date) && !isNaN(Number(s.balance))).sort((a, b) => a.date < b.date ? -1 : 1).pop();
+  if (bs) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}` };
+  if (state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (inWin(ad) && (!bal || ad > bal.date)) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
+  const has21 = upc && pc.pay.slice(8, 10) === '21', [ty, tm] = today.split('-').map(Number);
+  const mid21 = upc && !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pc.pay; });
+  let cashRows = '<div class="note">이 결제 기간의 통장 잔액을 기록하세요.</div>';
   if (bal) {
-    const avail = bal.v + od, after = bal.v - bill, ago = Math.round(dnum(today) - dnum(bal.date));
-    const verdict = after >= 0 ? tag('적절' + lbl, 'ok') : after >= -od ? tag('위험' + lbl, 'warn') : tag('파산' + lbl, 'bad');
+    const avail = bal.v + od, after = bal.v - bill, ago = Math.round(dnum(today) - dnum(bal.date)), pre = past ? '당시 ' : '';
+    const verdict = after >= 0 ? tag(pre + '적절' + lbl, 'ok') : after >= -od ? tag(pre + '위험' + lbl, 'warn') : tag(pre + '파산' + lbl, 'bad');
     const mLim = avail > 0 ? avail : (bill > 0 ? bill / 2 : 0);   // 인출 가능액이 0 이하이면 막대를 '초과'로 가득 채움
     cashRows = `${meter('청구 예정액 / 인출 가능액', bill, mLim, `<b>${won(bill)}</b> / ${won(avail)} ${verdict}`, after >= 0 ? '' : after >= -od ? 'mid' : 'over')}
       <table><tr><td>청구 예정액${lbl}</td><td><b>${won(bill)}</b></td></tr>
@@ -349,9 +356,9 @@ function viewAnalysis() {
       <tr><td>통장 인출 가능액 <span class="note">잔액 + 마이너스 한도 ${won(od)}</span></td><td><b>${won(avail)}</b></td></tr>
       <tr><td>인출 후 통장 잔액(예상)</td><td><b class="${after < 0 ? 'neg' : ''}">${won(after)}</b></td></tr>
       <tr><td>판정</td><td>${verdict}</td></tr></table>
-      ${ago > 10 ? `<div class="note" style="color:var(--warn)">잔액 기록이 ${ago}일 전이에요. 새로 기록하세요.</div>` : ''}`;
+      ${ago > 10 && upc ? `<div class="note" style="color:var(--warn)">잔액 기록이 ${ago}일 전이에요. 새로 기록하세요.</div>` : ''}`;
   }
-  h += `<div class="card"><h2>현금 점검 <small>${np.pays.map(p => `${mdOf(p.d)} ${p.label}`).join(' · ')} · D-${dday} · 사용분 ${dd(np.start)} ~ ${dd(np.end)}</small></h2>
+  h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
     ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
     ${cashRows}
     ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
@@ -381,7 +388,7 @@ function viewAnalysis() {
     <div class="secT">수입</div>
     ${incSec}
     <div class="secT">지출</div>
-    ${meter('카드 사용액 / 카드 한도 (다음 달 13·14일 청구)', cardUse, S.cardLimit, `<b>${won(cardUse)}</b> / ${won(S.cardLimit)} ${tag(cardUse > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
+    ${meter('카드 사용액 / 카드 한도', cardUse, S.cardLimit, `<b>${won(cardUse)}</b> / ${won(S.cardLimit)} ${tag(cardUse > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
     ${meter('월 생활비 한도', cur.total, S.monthLimit, `<b>${won(cur.total)}</b> / ${won(S.monthLimit)}${cur.total > S.monthLimit ? ' · ' + won(cur.total - S.monthLimit) + ' 초과' : ''}`)}
     ${meter('배달 (월 한도 횟수)', cur.deliv, S.deliveryLimit, `<b>${cur.deliv}건</b> · ${won(cur.delivAmt)}`)}
     <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar go" data-cat="${esc(c)}" style="cursor:pointer"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
@@ -485,16 +492,24 @@ function viewAnalysis() {
     state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; state.aAlign = 'month'; viewAnalysis(); };
+  $('#pSel').onchange = e => { state.pSel = e.target.value; viewAnalysis(); };
 }
 
 function viewSettings() {
   const S = state.settings, rules = Object.entries(state.rules).sort((a, b) => a[0].localeCompare(b[0], 'ko'));
+  const pDays = payDaysOf(), pl = payments(todayISO()), np = pl[nextPayIdx(pl, todayISO())], pdFrom = dnum(np.pay) - dnum(todayISO()) <= 7 ? addM(np.ym, 1) : np.ym;   // 새 결제일 기본 적용월
   view().innerHTML = `<div class="card"><h2>한도·카드 설정</h2><div class="row2">
       <div><label class="f">월 생활비 한도(원)</label><input id="sMonth" inputmode="numeric" value="${S.monthLimit}"></div><div><label class="f">카드 사용 한도(원)</label><input id="sCard" inputmode="numeric" value="${S.cardLimit}"></div>
       <div><label class="f">배달 월 한도(회)</label><input id="sDel" inputmode="numeric" value="${S.deliveryLimit}"></div><div><label class="f">술·유흥 연 한도(원)</label><input id="sBooze" inputmode="numeric" value="${S.boozeYear}"></div>
-      <div><label class="f">하나카드 결제일(일)</label><input id="sHana" inputmode="numeric" value="${S.hanaDay}"></div><div><label class="f">국민카드 결제일(일)</label><input id="sKb" inputmode="numeric" value="${S.kbDay}"></div>
       <div><label class="f">마이너스 인출 한도(원)</label><input id="sOd" inputmode="numeric" value="${S.overdraftLimit}"></div></div>
     <button class="btn" data-act="saveSettings">설정 저장</button></div>
+
+    <div class="card"><h2>카드결제일(하나카드 기준)</h2>
+      <table>${pDays.map(e => `<tr><td>${esc(e.from)} 결제부터</td><td><b>${e.day}일</b></td></tr>`).join('')}</table>
+      <div class="row2" style="margin-top:12px"><div><label class="f">바뀐 결제일</label><select id="pdDay">${PAY_DAYS_OK.map(d => `<option value="${d}">${d}일</option>`).join('')}</select></div><div><label class="f">몇 월 결제부터</label><input id="pdFrom" type="month" value="${pdFrom}"></div></div>
+      <button class="btn sec" data-act="addPayDay">결제일 변경 추가</button>
+      <button class="btn sec" data-act="delPayDay" ${pDays.length > 1 ? '' : 'disabled'}>마지막 변경 지우기</button>
+      <div class="note">결제일을 바꾸면 그 결제월부터 선택지와 청구 기간이 바뀌어요. 청구 기간은 하나카드 결제일 표 기준.</div></div>
 
     <div class="card"><h2>분류 규칙 <small>대분류(또는 '대분류>소분류') → 성격</small></h2>
       <table>${rules.map(([k, n]) => `<tr><td>${esc(k)}</td><td><select data-rule="${esc(k)}" style="width:auto;padding:4px 8px;font-size:14px">${NATURES.map(x => `<option ${x === n ? 'selected' : ''}>${x}</option>`).join('')}</select></td><td>${state.rules[k] !== DEFAULT_RULES[k] || !(k in DEFAULT_RULES) ? `<button class="btn sec sm" data-act="delRule" data-key="${esc(k)}">삭제</button>` : ''}</td></tr>`).join('')}</table>
@@ -747,10 +762,24 @@ const handlers = {
   hMore: () => { state.hLimit = (state.hLimit || 200) + 200; renderHistoryBody(); },
   saveSettings: () => run(async () => {
     const n = id => parseInt($(id).value.replace(/\D/g, ''), 10);
-    const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), hanaDay: n('#sHana'), kbDay: n('#sKb'), overdraftLimit: n('#sOd') };
-    if (Object.values(s).some(v => !v && v !== 0)) throw new Error('숫자를 확인하세요'); if (s.hanaDay < 1 || s.hanaDay > 28 || s.kbDay < 1 || s.kbDay > 28) throw new Error('카드 결제일은 1~28일로 입력하세요'); if (s.overdraftLimit < 0) throw new Error('마이너스 인출 한도는 0 이상이어야 해요');
+    const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), overdraftLimit: n('#sOd') };
+    if (Object.values(s).some(v => !v && v !== 0)) throw new Error('숫자를 확인하세요'); if (s.overdraftLimit < 0) throw new Error('마이너스 인출 한도는 0 이상이어야 해요');
     const merged = { ...state.settings, ...s };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('설정 저장됨');
+  }),
+  addPayDay: () => run(async () => {
+    const day = parseInt($('#pdDay').value, 10), from = $('#pdFrom').value, cur = payDaysOf();
+    if (!PAY_DAYS_OK.includes(day)) throw new Error('하나카드 결제일 표에 있는 날짜만 고를 수 있어요');
+    if (!/^\d{4}-\d{2}$/.test(from)) throw new Error('결제월을 입력하세요');
+    if (from < cur[0].from) throw new Error(`${cur[0].from} 결제월 이후로 입력하세요`);
+    const payDays = [...cur.filter(e => e.from !== from), { from, day }].sort((a, b) => a.from < b.from ? -1 : 1);
+    const merged = { ...state.settings, payDays };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; state.pSel = null; toast('결제일 변경 추가됨'); render();
+  }),
+  delPayDay: () => run(async () => {
+    const cur = payDaysOf(); if (cur.length < 2) throw new Error('지울 변경 내역이 없어요');
+    const merged = { ...state.settings, payDays: cur.slice(0, -1) };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; state.pSel = null; toast('마지막 변경을 지웠어요'); render();
   }),
   ppTab: el => { state.ppTab = el.dataset.v; viewAnalysis(); },
   saveOnnuriSnap: () => run(async () => {
