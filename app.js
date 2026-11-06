@@ -358,12 +358,18 @@ function viewAnalysis() {
       <tr><td>판정</td><td>${verdict}</td></tr></table>
       ${ago > 10 && upc ? `<div class="note" style="color:var(--warn)">잔액 기록이 ${ago}일 전이에요. 새로 기록하세요.</div>` : ''}`;
   }
+  const PR = S.payRecords || {};
+  const pastHtml = past ? `<table><tr><th style="text-align:left">월</th><th>청구액</th><th>통장잔액</th><th>판정</th></tr>${opts.slice(0, di).reverse().map(p => {
+    const r = PR[p.ym], sel = p === pc, hasR = r && r.bal != null && !isNaN(r.bal);
+    return `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제</td>`
+      + (hasR ? `<td>${won(r.bill)}</td><td>${won(r.bal)} <span class="note">${r.balDate ? dd(r.balDate).slice(5) : ''}</span></td><td>${r.bal >= 0 ? tag('적절', 'ok') : r.bal >= -od ? tag('위험', 'warn') : tag('파산', 'bad')}</td></tr>` : `<td>-</td><td>-</td><td><span class="note">은행 기록 필요</span></td></tr>`);
+  }).join('')}</table><div class="note">결제월 은행 거래내역의 하나카드·KB카드출금 합계와 결제일+2일 마지막 거래 후 잔액이에요. 은행 거래내역을 올리면 채워져요.</div>` : '';
   h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
-    ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
+    ${past ? pastHtml : `${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
     ${cashRows}
     ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
     <div class="row2 snapRow" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="bkDate" type="date" value="${today}"></div><div><label class="f">통장 잔액(원)</label><input id="bkBal" inputmode="text" placeholder="예: -1416257"></div></div>
-    <button class="btn sec" data-act="saveBankSnap">잔액 기록</button></div>`;
+    <button class="btn sec" data-act="saveBankSnap">잔액 기록</button>`}</div>`;
 
   // --- monthly ---
   const mrows = keys.map(k => ({ k, ...B[k], inc: incBy[k] || 0, label: k.slice(2) }));
@@ -493,6 +499,7 @@ function viewAnalysis() {
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; state.aAlign = 'month'; viewAnalysis(); };
   $('#pSel').onchange = e => { state.pSel = e.target.value; viewAnalysis(); };
+  document.querySelectorAll('tr[data-pr]').forEach(tr => { tr.onclick = () => { state.pSel = tr.dataset.pr; viewAnalysis(); }; });
 }
 
 function viewSettings() {
@@ -883,15 +890,35 @@ function parseCard(aoa, hi, fname) {
 }
 function parseBank(aoa, hi, fname) {
   const col = colMap(aoa[hi]), g = (r, k) => (k in col ? r[col[k]] : '');
-  const items = [];
+  const items = []; let seq = 0;
   for (const r of aoa.slice(hi + 1)) {
     const date = cellDate(g(r, '거래일시')); if (!date) continue;
     const out = Math.round(toNum(g(r, '출금액'))), inn = Math.round(toNum(g(r, '입금액'))); if (!out && !inn) continue;
     let label = '', memo = '';
     for (const k of ['보낸분/받는분', '송금메모', '적요']) { const v = sp1(g(r, k)); if (v && v !== 'nan') { if (!label) label = v; else if (!memo && v !== label) memo = v; } }
-    items.push({ date, label: label || '거래', memo, out, inn });
+    const raw = g(r, '거래일시'), tm = /(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(raw)), jeok = sp1(g(r, '적요')), balRaw = g(r, '잔액');
+    const ts = date + ' ' + (tm ? `${p2(tm[1])}:${tm[2]}:${tm[3] || '00'}` : `00:00:00.${String(99999 - seq).padStart(5, '0')}`);   // 시간이 없으면 행 순서(최신순)로 대체
+    const bal = balRaw === '' || balRaw == null || String(balRaw).trim() === '' ? null : Math.round(toNum(balRaw)); seq++;
+    items.push({ date, label: label || '거래', memo, out, inn, ts, bal, jeok: jeok === 'nan' ? '' : jeok });
   }
   return { type: 'bank', fname, items };
+}
+function payRecordsFromBank(files) {   // 은행 거래내역 → 지난 카드 결제 확정 기록 { ym: { ym, bill, bal, balDate, src } }
+  const seen = new Set(), items = [], src = {};
+  for (const f of files) for (const it of f.items) { const k = [it.ts, it.out, it.inn, it.bal].join('|'); if (seen.has(k)) continue; seen.add(k); items.push(it); src[k] = f.fname; }
+  if (!items.length) return {};
+  const today = todayISO(), recs = {};
+  items.sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0);
+  for (const P of payments(today)) {
+    if (P.pay >= today) continue;
+    const lim = isoOf(dnum(P.pay) + 2), mon = items.filter(it => it.date.startsWith(P.ym));
+    if (!mon.length || items[0].date > P.pay || !items.some(it => it.date >= lim)) continue;   // 파일이 결제일 ~ 결제일+2일을 모두 포함할 때만
+    const bill = mon.filter(it => it.jeok !== '체크카드' && /하나카드|KB카드출금/.test(`${it.label} ${it.memo} ${it.jeok}`)).reduce((s, it) => s + it.out, 0);
+    const upto = items.filter(it => it.date <= lim && it.bal != null), last = upto[upto.length - 1];
+    if (!last) continue;
+    recs[P.ym] = { ym: P.ym, bill, bal: last.bal, balDate: last.date, src: src[[last.ts, last.out, last.inn, last.bal].join('|')] || '' };
+  }
+  return recs;
 }
 function parseLedger(aoa, hi, fname) {
   const col = colMap(aoa[hi]), g = (r, k) => (k in col ? r[col[k]] : '');
@@ -1084,7 +1111,7 @@ function buildCands() {
 function renderImport() {
   const imp = state.imp, c = imp.cands, fresh = c.filter(x => !x._dup), on = c.filter(x => x._on);
   const cards = imp.files.filter(f => f.type === 'card'), banks = imp.files.filter(f => f.type === 'bank'), ledgers = imp.files.filter(f => f.type === 'ledger'), lps = imp.files.filter(f => f.type === 'localpay');
-  const newRules = impNewRules();
+  const newRules = impNewRules(), nPayRec = banks.length ? Object.keys(payRecordsFromBank(banks)).length : 0;
   const cancelled = cards.reduce((s, f) => s + f.cancelled, 0), dup = c.filter(x => x._dup).length, cardPay = c.filter(x => x._cardPay && !x._dup).length;
   const unc = on.filter(x => x.kind === 'expense' && !x.cls).length, sumOut = on.filter(x => x.kind === 'expense' && x.cls.split('>')[0] !== '카드대금').reduce((s, x) => s + x.amount, 0), sumIn = on.filter(x => x.kind === 'income').reduce((s, x) => s + x.amount, 0);
   const catOpts = sel => ['', ...allCats()].map(x => `<option value="${esc(x)}" ${x === sel ? 'selected' : ''}>${x || '미분류'}</option>`).join('');
@@ -1106,7 +1133,7 @@ function renderImport() {
     ${imp.files.length ? `<div class="banner ${fresh.length ? 'ok' : 'warn'}" style="margin-top:12px">
       ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length || ledgers.length) && lps.length ? ' · ' : ''}${lps.map(f => { const nk = f.items.length - f.unknown, wal = f.items.some(it => it.kind === '결제' || it.kind === '충전'); return `대전사랑 ${wal ? '결제/충전' : '캐시백'} ${nk}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}${(() => { const mv = f.items.filter(it => it.kind === '잔액이동').length, other = f.unknown - mv; return (mv ? ` · 잔액이동 ${mv}건 제외 (카드 교체 때 잔액 옮김 — 분석 탭에 현재 잔액을 한 번 입력하세요)` : '') + (other > 0 ? ` · 알 수 없는 유형 ${other}건 제외` : ''); })()}`; }).join(' · ')}
       ${ons.length ? `${(cards.length || banks.length || ledgers.length || lps.length) ? ' · ' : ''}${ons.map(f => `온누리 ${f.type === 'onnuripay' ? '결제' : '충전'} ${f.items.length}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}`).join(' · ')}` : ''}
-      → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
+      → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${nPayRec ? ` · 카드 결제 확정 기록 ${nPayRec}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
       ${imp.files.map((f, fi) => f.type === 'card' ? `<div class="note">${esc(f.fname)} — 결제수단: <select data-imp="fpay" data-f="${fi}" style="width:auto;font-size:13px;padding:4px"><option value="card" ${f.payAs === 'prepaid' ? '' : 'selected'}>신용카드</option><option value="prepaid" ${f.payAs === 'prepaid' ? 'selected' : ''}>대전사랑카드</option></select></div>` : '').join('')}
       <div class="row2" style="margin-top:10px">${cards.length ? `<div><label class="f">할부 처리</label><select data-imp="mode"><option value="split" ${imp.mode === 'split' ? 'selected' : ''}>월별로 나누기 (기존 방식)</option><option value="full" ${imp.mode === 'full' ? 'selected' : ''}>한 번에 전액</option></select></div>` : ''}
       ${banks.length ? `<div><label class="f">은행의 카드대금 출금</label><select data-imp="cardpay"><option value="0" ${imp.incCardPay ? '' : 'selected'}>제외 (카드 내역과 중복)</option><option value="1" ${imp.incCardPay ? 'selected' : ''}>포함</option></select></div>` : ''}</div>
@@ -1116,7 +1143,7 @@ function renderImport() {
       <div style="overflow-x:auto;margin-top:8px"><table><tr><th></th><th>날짜</th><th style="text-align:left">사용처</th><th>금액</th><th>분류</th></tr>${rows || '<tr><td colspan="5" class="note">새로 가져올 내역이 없습니다.</td></tr>'}</table></div>
       <div class="note" style="margin-top:8px">선택 ${on.length}건 · 지출 ${won(sumOut)} · 수입 ${won(sumIn)}</div>
       ` : ''}
-    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : `${on.length}건 가져오기`}</button>` : ''}
+    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset || nPayRec) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : (!on.length && nPayRec ? '카드 결제 기록 저장' : `${on.length}건 가져오기`)}</button>` : ''}
     <button class="btn sec" data-act="closeModal">닫기</button>`;
   $('#impFile').onchange = e => e.target.files.length && loadImportFiles([...e.target.files]);
 }
@@ -1165,8 +1192,10 @@ const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.r
 handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
   const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, _unc0, _onnuriFace, ...r }) => r);
-  if (!rows.length && !state.imp.asset) return;
+  const recs = payRecordsFromBank(state.imp.files.filter(f => f.type === 'bank')), nRec = Object.keys(recs).length;
+  if (!rows.length && !state.imp.asset && !nRec) return;
   const parts = [];
+  if (nRec) { const merged = { ...state.settings, payRecords: { ...(state.settings.payRecords || {}), ...recs } }; await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; parts.push(`카드 결제 확정 기록 ${nRec}건`); }
   if (state.imp.asset) { state.asset = await backend.saveAsset(state.imp.asset); state.assetErr = ''; parts.push('자산 데이터 저장'); }
   if (rows.length) {
     const newRules = impNewRules();
