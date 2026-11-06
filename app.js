@@ -605,10 +605,12 @@ function aLineChart(pts, fmt) {
     <text x="${x(i)}" y="${H - 6}" text-anchor="middle">${esc(p.x)}</text>`).join('');
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"><path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2"/>${dots}</svg>`;
 }
-function aNext21() {
-  const now = new Date(); let d = new Date(now.getFullYear(), now.getMonth(), 21);
-  if (now.getDate() > 21) d = new Date(now.getFullYear(), now.getMonth() + 1, 21);
-  return { date: d, days: Math.ceil((d - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000) };
+const ROUTINE_EOM_FROM = '2026-12-31';   // 메인 월 루틴: 이 날짜부터 매월 말일 (그 전에는 21일)
+function aNextRoutine() {   // 다음 메인 월 루틴 날짜 { iso, label, days }
+  const t = todayISO(), [y, m] = t.split('-').map(Number), d21 = `${y}-${p2(m)}-21`, eom = isoOf(Date.UTC(y, m, 0) / 86400000), n21 = `${addM(t.slice(0, 7), 1)}-21`;
+  let iso = t <= d21 && d21 < ROUTINE_EOM_FROM ? d21 : eom >= ROUTINE_EOM_FROM ? eom : (n21 < ROUTINE_EOM_FROM ? n21 : ROUTINE_EOM_FROM);
+  if (iso < t) iso = isoOf(Date.UTC(y, m + 1, 0) / 86400000);   // 이번 달 말일이 지났으면 (그럴 일은 없지만) 다음 달 말일
+  return { iso, label: `${+iso.slice(5, 7)}월 ${+iso.slice(8, 10)}일${iso >= ROUTINE_EOM_FROM ? '(말일)' : ''}`, days: Math.round(dnum(iso) - dnum(t)) };
 }
 function aMonthStats() {
   const B = {};
@@ -642,7 +644,7 @@ function viewAsset() {
   const M = aMonths();
   if (!M.length) { view().innerHTML = '<div class="card neg">월별기록에서 데이터를 찾지 못했습니다.</div>'; return; }
   const L = M[M.length - 1], P = M.length > 1 ? M[M.length - 2] : null;
-  const n21 = aNext21();
+  const nr = aNextRoutine();
   const up = state.asset.uploaded_at ? new Date(state.asset.uploaded_at) : null;
   const upTxt = up && !isNaN(up) ? `${up.getFullYear()}.${p2(up.getMonth() + 1)}.${p2(up.getDate())} ${p2(up.getHours())}:${p2(up.getMinutes())}` : '-';
   let h = `<div class="note" style="margin:0 0 10px">기준: ${aYmd(L.date)} 월별기록 · 파일 ${esc(state.asset.file_name || '-')} · 업로드 ${upTxt}</div>`;
@@ -650,8 +652,8 @@ function viewAsset() {
   // ---- banner: 21일 리마인더 / 기록 지연 ----
   const daysSince = Math.floor((Date.now() - aToDate(L.date).getTime()) / 86400000);
   h += daysSince > 35
-    ? `<div class="banner warn">마지막 기록이 ${daysSince}일 전입니다. 매월 21일 루틴(시트 갱신)을 확인하세요. 다음 21일: ${n21.date.getMonth() + 1}월 21일 (D-${n21.days})</div>`
-    : `<div class="banner ok">기록은 최신입니다. 다음 21일 루틴: ${n21.date.getMonth() + 1}월 21일 (D-${n21.days})</div>`;
+    ? `<div class="banner warn">마지막 기록이 ${daysSince}일 전입니다. 월 루틴(시트 갱신)을 확인하세요. 다음 월 루틴: ${nr.label} (D-${nr.days})</div>`
+    : `<div class="banner ok">기록은 최신입니다. 다음 월 루틴: ${nr.label} (D-${nr.days}) · 2026-12-31부터 매월 말일</div>`;
 
   // ---- hero ----
   h += `<div class="card hero"><div style="color:var(--sub);font-size:13px">순자산 (${aYmd(L.date)})</div>
@@ -711,13 +713,16 @@ function viewAsset() {
 
   // ---- ladder ----
   const curStep = aNum(aS('대시보드', 'E2')) ?? 0, reach = aNum(aS('사다리', 'B12'));
-  let streak = 0; for (let i = M.length - 1; i >= 0; i--) { if ((M[i].debt ?? -1) >= 0) streak++; else break; }
+  // 1단계 조건 (전략서 v13): 카드 결제 후(결제일+2일) 통장 잔액 0원 이상 3회 연속 — 앱 결제 기록의 확정분 기준
+  const PRs = state.settings.payRecords || {}, donePays = payments(todayISO()).filter(p => p.pay < todayISO() && PRs[p.ym] && PRs[p.ym].bal != null);
+  let streak = 0; for (let i = donePays.length - 1; i >= 0; i--) { if (PRs[donePays[i].ym].bal >= 0) streak++; else break; }
+  const lastPR = donePays.length ? PRs[donePays[donePays.length - 1].ym] : null;
   const CASH_GOAL = 7050000, cashPct = Math.min(1, (L.cash || 0) / CASH_GOAL);
   h += `<div class="card"><h2>위험자산 사다리 <small>현재 ${curStep}단계 · 엑셀 판정 도달 가능 ${reach ?? '-'}단계</small></h2><div class="steps">${[6, 7, 8, 9, 10].map((r, i) => `
     <div class="step ${i === curStep ? 'cur' : ''}"><div class="n">${aS('사다리', 'A' + r)}단계 ${i === curStep ? '◀ 현재' : ''}</div>
     <div class="p">위험 ${aPct(aNum(aS('사다리', 'C' + r)), 0)} · 코어 ${aPct(aNum(aS('사다리', 'D' + r)), 0)}</div>
     <div style="margin-top:6px">${esc(aS('사다리', 'B' + r))}</div></div>`).join('')}</div>
-    <div class="cond"><b>1단계 조건</b> — 마이너스통장 0원 연속 ${streak}/3개월 기록 ${L.debt < 0 ? `(현재 부채 ${won(Math.abs(L.debt))})` : ''}
+    <div class="cond"><b>1단계 조건</b> — 카드 결제 후(결제일+2일) 통장 잔액 0원 이상 연속 ${streak}/3회 ${lastPR ? `(최근 확정 ${won(lastPR.bal)})` : '(확정 기록 없음 — 은행 거래내역을 올리세요)'}
       <div class="prog"><span style="width:${Math.min(100, streak / 3 * 100).toFixed(0)}%"></span></div></div>
     <div class="cond"><b>2단계 조건</b> — 현금 완충 ${won(L.cash)} / ${won(CASH_GOAL)} (${aPct(cashPct)})
       <div class="prog"><span style="width:${(cashPct * 100).toFixed(1)}%"></span></div></div>
