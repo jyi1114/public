@@ -342,12 +342,14 @@ function viewAnalysis() {
     const est = inProg && el >= 5 ? bill0 / el * ptotal : null;
     let bal = null;   // 통장 잔액: 이 결제 기간(앞 결제일 ≤ 날짜 < 이번 결제일) 안의 기록 중 최신 (결제일 당일 기록은 다음 결제 몫)
     const inWin = d => (!pv || d >= pv.pay) && d < p.pay;
-    const bs = [...(S.bankSnaps || [])].filter(s => inWin(s.date) && !isNaN(Number(s.balance))).sort((a, b) => a.date < b.date ? -1 : 1).pop();
-    if (bs) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}` };
-    if (state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (inWin(ad) && (!bal || ad > bal.date)) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
-    return { bill0, inProg, ptotal, el, est, bill: est != null ? est : bill0, bal };
+    const latest = l => [...(l || [])].filter(s => inWin(s.date) && !isNaN(Number(s.balance))).sort((a, b) => a.date < b.date ? -1 : 1).pop();
+    const bs = latest(S.bankSnaps), ba = latest(S.bankAuto);   // 직접 입력한 잔액이 있으면 그것이 우선, 없으면 은행 거래내역의 최근 잔액
+    if (bs) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}`, manual: true };
+    else if (ba) bal = { date: ba.date, v: Number(ba.balance), src: `은행 거래내역 ${dd(ba.date)}` };
+    if (!bs && state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (inWin(ad) && (!bal || ad > bal.date)) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
+    return { bill0, inProg, ptotal, el, est, bill: est != null ? est : bill0, bal, hasAuto: !!ba };
   };
-  const { bill0, inProg, ptotal, el, est, bill, bal } = cashCalc(pc), lbl = inProg ? ' (예상)' : '';
+  const { bill0, inProg, ptotal, el, est, bill, bal, hasAuto } = cashCalc(pc), lbl = inProg ? ' (예상)' : '';
   const has21 = upc && pc.pay.slice(8, 10) === '21', [ty, tm] = today.split('-').map(Number);
   const mid21 = upc && !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pc.pay; });
   let cashRows = '<div class="note">이 결제 기간의 통장 잔액을 기록하세요.</div>';
@@ -366,6 +368,16 @@ function viewAnalysis() {
   const PR = S.payRecords || {};
   const vTag = (v, s = '') => v >= 0 ? tag('적절' + s, 'ok') : v >= -od ? tag('위험' + s, 'warn') : tag('파산' + s, 'bad');
   const isConf = p => { const r = PR[p.ym]; return !!(r && r.bal != null && !isNaN(r.bal)); };   // 은행 거래내역으로 확정된 결제
+  if (isConf(pc)) {   // 확정된 결제: 은행 기록(청구액·결제일+2일 잔액)으로 위쪽도 그림
+    const r = PR[pc.ym], cb = Number(r.bill) || 0, before = r.bal + cb, avail = before + od, verdict = vTag(r.bal, ' (확정)');
+    const mLim = avail > 0 ? avail : (cb > 0 ? cb / 2 : 0);
+    cashRows = `${meter('청구액 / 인출 가능액', cb, mLim, `<b>${won(cb)}</b> / ${won(avail)} ${verdict}`, r.bal >= 0 ? '' : r.bal >= -od ? 'mid' : 'over')}
+      <table><tr><td>청구액 (확정)</td><td><b>${won(cb)}</b></td></tr>
+      <tr><td>결제 전 통장 잔액 <span class="note">추정: 인출 후 잔액 + 청구액</span></td><td><b>${won(before)}</b></td></tr>
+      <tr><td>통장 인출 가능액 <span class="note">잔액 + 마이너스 한도 ${won(od)}</span></td><td><b>${won(avail)}</b></td></tr>
+      <tr><td>인출 후 통장 잔액 (확정) <span class="note">${r.balDate ? dd(r.balDate) : ''} 은행 기록</span></td><td><b class="${r.bal < 0 ? 'neg' : ''}">${won(r.bal)}</b></td></tr>
+      <tr><td>판정</td><td>${verdict}</td></tr></table>`;
+  }
   const pastHtml = `<div class="note" style="margin:14px 0 6px">결제 기록</div><table><tr><th style="text-align:left">월</th><th>청구액</th><th>통장잔액</th><th>판정</th></tr>${[...opts].reverse().map(p => {
     const sel = p === pc, conf = isConf(p), r = PR[p.ym];
     const head = `<tr data-pr="${p.ym}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="text-align:left;${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${mdOf(p.pay)} 결제${conf ? '' : ' (예측)'}</td>`;
@@ -379,7 +391,7 @@ function viewAnalysis() {
     ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
     ${pastHtml}
     <div class="row2 snapRow" style="margin-top:12px"><div><label class="f">확인한 날짜</label><input id="bkDate" type="date" value="${today}"></div><div><label class="f">통장 잔액(원)</label><input id="bkBal" inputmode="text" placeholder="예: -1416257"></div></div>
-    <button class="btn sec" data-act="saveBankSnap">잔액 기록</button></div>`;
+    <div class="row2" style="margin-top:8px"><button class="btn sec" data-act="saveBankSnap" style="margin:0">잔액 기록</button>${bal && bal.manual ? `<button class="btn sec" data-act="useBankAuto" data-from="${prev ? prev.pay : ''}" data-to="${pc.pay}" style="margin:0" ${hasAuto || state.asset ? '' : 'disabled title="이 기간의 은행 거래내역이 없어요"'}>통장 기록으로 변경</button>` : ''}</div></div>`;
 
   // --- monthly ---
   const mrows = keys.map(k => ({ k, ...B[k], inc: incBy[k] || 0, label: k.slice(2) }));
@@ -806,6 +818,13 @@ const handlers = {
     const merged = { ...state.settings, onnuriSnaps };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('잔액 기록됨'); viewAnalysis();
   }),
+  useBankAuto: el => run(async () => {   // 이 결제 기간에 직접 입력한 통장 잔액을 지우고 은행 거래내역 잔액을 쓰게 함
+    const from = el.dataset.from || '', to = el.dataset.to, inWin = d => (!from || d >= from) && d < to;
+    const mine = (state.settings.bankSnaps || []).filter(s => inWin(s.date)); if (!mine.length) return;
+    if (!confirm(`이 결제 기간에 직접 입력한 통장 잔액 ${mine.length}건(${mine.map(s => s.date.slice(5).replace('-', '.')).join(', ')})을 지우고 은행 거래내역 잔액을 쓸까요?`)) return;
+    const merged = { ...state.settings, bankSnaps: (state.settings.bankSnaps || []).filter(s => !inWin(s.date)) };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('통장 기록으로 변경됨'); viewAnalysis();
+  }),
   saveBankSnap: () => run(async () => {
     const date = $('#bkDate').value, v = $('#bkBal').value.replace(/[,\s]/g, '');
     if (!date) throw new Error('날짜를 입력하세요');
@@ -911,6 +930,11 @@ function parseBank(aoa, hi, fname) {
     items.push({ date, label: label || '거래', memo, out, inn, ts, bal, jeok: jeok === 'nan' ? '' : jeok });
   }
   return { type: 'bank', fname, items };
+}
+function bankDailyBals(files) {   // 은행 거래내역 → 날짜별 마지막 거래 후 잔액 [{ date, balance }]
+  const items = files.flatMap(f => f.items).filter(it => it.bal != null && !isNaN(it.bal)).sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0), m = {};
+  for (const it of items) m[it.date] = it.bal;
+  return Object.entries(m).map(([date, balance]) => ({ date, balance }));
 }
 function payRecordsFromBank(files) {   // 은행 거래내역 → 지난 카드 결제 확정 기록 { ym: { ym, bill, bal, balDate, src } }
   const seen = new Set(), items = [], src = {};
@@ -1120,7 +1144,7 @@ function buildCands() {
 function renderImport() {
   const imp = state.imp, c = imp.cands, fresh = c.filter(x => !x._dup), on = c.filter(x => x._on);
   const cards = imp.files.filter(f => f.type === 'card'), banks = imp.files.filter(f => f.type === 'bank'), ledgers = imp.files.filter(f => f.type === 'ledger'), lps = imp.files.filter(f => f.type === 'localpay');
-  const newRules = impNewRules(), nPayRec = banks.length ? Object.keys(payRecordsFromBank(banks)).length : 0;
+  const newRules = impNewRules(), nPayRec = banks.length ? Object.keys(payRecordsFromBank(banks)).length : 0, lastBal = banks.length ? bankDailyBals(banks).pop() : null;
   const cancelled = cards.reduce((s, f) => s + f.cancelled, 0), dup = c.filter(x => x._dup).length, cardPay = c.filter(x => x._cardPay && !x._dup).length;
   const unc = on.filter(x => x.kind === 'expense' && !x.cls).length, sumOut = on.filter(x => x.kind === 'expense' && x.cls.split('>')[0] !== '카드대금').reduce((s, x) => s + x.amount, 0), sumIn = on.filter(x => x.kind === 'income').reduce((s, x) => s + x.amount, 0);
   const catOpts = sel => ['', ...allCats()].map(x => `<option value="${esc(x)}" ${x === sel ? 'selected' : ''}>${x || '미분류'}</option>`).join('');
@@ -1142,7 +1166,7 @@ function renderImport() {
     ${imp.files.length ? `<div class="banner ${fresh.length ? 'ok' : 'warn'}" style="margin-top:12px">
       ${cards.length ? `카드 ${cards.reduce((s, f) => s + f.items.length, 0)}건${cancelled ? ` (취소 ${cancelled}건 제외)` : ''}` : ''}${cards.length && banks.length ? ' · ' : ''}${banks.length ? `은행 ${banks.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length) && ledgers.length ? ' · ' : ''}${ledgers.length ? `가계부 ${ledgers.reduce((s, f) => s + f.items.length, 0)}건` : ''}${(cards.length || banks.length || ledgers.length) && lps.length ? ' · ' : ''}${lps.map(f => { const nk = f.items.length - f.unknown, wal = f.items.some(it => it.kind === '결제' || it.kind === '충전'); return `대전사랑 ${wal ? '결제/충전' : '캐시백'} ${nk}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}${(() => { const mv = f.items.filter(it => it.kind === '잔액이동').length, other = f.unknown - mv; return (mv ? ` · 잔액이동 ${mv}건 제외 (카드 교체 때 잔액 옮김 — 분석 탭에 현재 잔액을 한 번 입력하세요)` : '') + (other > 0 ? ` · 알 수 없는 유형 ${other}건 제외` : ''); })()}`; }).join(' · ')}
       ${ons.length ? `${(cards.length || banks.length || ledgers.length || lps.length) ? ' · ' : ''}${ons.map(f => `온누리 ${f.type === 'onnuripay' ? '결제' : '충전'} ${f.items.length}건${f.cancelled ? ` (취소 ${f.cancelled}쌍 제외)` : ''}`).join(' · ')}` : ''}
-      → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${nPayRec ? ` · 카드 결제 확정 기록 ${nPayRec}건` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
+      → 새 내역 <b>${fresh.length}건</b> · 이미 있어서 건너뜀 <b>${dup}건</b>${cardPay ? ` · 카드대금 ${cardPay}건` : ''}${nPayRec ? ` · 카드 결제 확정 기록 ${nPayRec}건` : ''}${lastBal ? ` · 통장 잔액 ${lastBal.date.slice(5).replace('-', '.')} ${won(lastBal.balance)}` : ''}${newRules.length ? ` · 분류 규칙 ${newRules.length}개 추가 예정` : ''}</div>
       ${imp.files.map((f, fi) => f.type === 'card' ? `<div class="note">${esc(f.fname)} — 결제수단: <select data-imp="fpay" data-f="${fi}" style="width:auto;font-size:13px;padding:4px"><option value="card" ${f.payAs === 'prepaid' ? '' : 'selected'}>신용카드</option><option value="prepaid" ${f.payAs === 'prepaid' ? 'selected' : ''}>대전사랑카드</option></select></div>` : '').join('')}
       <div class="row2" style="margin-top:10px">${cards.length ? `<div><label class="f">할부 처리</label><select data-imp="mode"><option value="split" ${imp.mode === 'split' ? 'selected' : ''}>월별로 나누기 (기존 방식)</option><option value="full" ${imp.mode === 'full' ? 'selected' : ''}>한 번에 전액</option></select></div>` : ''}
       ${banks.length ? `<div><label class="f">은행의 카드대금 출금</label><select data-imp="cardpay"><option value="0" ${imp.incCardPay ? '' : 'selected'}>제외 (카드 내역과 중복)</option><option value="1" ${imp.incCardPay ? 'selected' : ''}>포함</option></select></div>` : ''}</div>
@@ -1152,7 +1176,7 @@ function renderImport() {
       <div style="overflow-x:auto;margin-top:8px"><table><tr><th></th><th>날짜</th><th style="text-align:left">사용처</th><th>금액</th><th>분류</th></tr>${rows || '<tr><td colspan="5" class="note">새로 가져올 내역이 없습니다.</td></tr>'}</table></div>
       <div class="note" style="margin-top:8px">선택 ${on.length}건 · 지출 ${won(sumOut)} · 수입 ${won(sumIn)}</div>
       ` : ''}
-    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset || nPayRec) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : (!on.length && nPayRec ? '카드 결제 기록 저장' : `${on.length}건 가져오기`)}</button>` : ''}
+    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset || nPayRec || lastBal) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : (!on.length && (nPayRec || lastBal) ? '카드 결제·통장 잔액 기록 저장' : `${on.length}건 가져오기`)}</button>` : ''}
     <button class="btn sec" data-act="closeModal">닫기</button>`;
   $('#impFile').onchange = e => e.target.files.length && loadImportFiles([...e.target.files]);
 }
@@ -1201,10 +1225,15 @@ const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.r
 handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
   const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, _unc0, _onnuriFace, ...r }) => r);
-  const recs = payRecordsFromBank(state.imp.files.filter(f => f.type === 'bank')), nRec = Object.keys(recs).length;
-  if (!rows.length && !state.imp.asset && !nRec) return;
+  const bankFiles = state.imp.files.filter(f => f.type === 'bank'), recs = payRecordsFromBank(bankFiles), nRec = Object.keys(recs).length, dBals = bankDailyBals(bankFiles);
+  if (!rows.length && !state.imp.asset && !nRec && !dBals.length) return;
   const parts = [];
-  if (nRec) { const merged = { ...state.settings, payRecords: { ...(state.settings.payRecords || {}), ...recs } }; await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; parts.push(`카드 결제 확정 기록 ${nRec}건`); }
+  if (nRec || dBals.length) {   // 확정 기록 + 은행 잔액(날짜별 마지막 거래 후 잔액)을 설정에 저장
+    const nd = new Set(dBals.map(b => b.date)), bankAuto = [...(state.settings.bankAuto || []).filter(b => !nd.has(b.date)), ...dBals].sort((a, b) => a.date < b.date ? -1 : 1).slice(-400);
+    const merged = { ...state.settings, payRecords: { ...(state.settings.payRecords || {}), ...recs }, bankAuto };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged };
+    if (nRec) parts.push(`카드 결제 확정 기록 ${nRec}건`); if (dBals.length) parts.push(`통장 잔액 ${dBals[dBals.length - 1].date.slice(5).replace('-', '.')}까지`);
+  }
   if (state.imp.asset) { state.asset = await backend.saveAsset(state.imp.asset); state.assetErr = ''; parts.push('자산 데이터 저장'); }
   if (rows.length) {
     const newRules = impNewRules();
