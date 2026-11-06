@@ -22,7 +22,7 @@ const loadScript = src => new Promise((res, rej) => { const s = document.createE
 const statusCls = t => /⚠|초과|부족|위험/.test(t || '') ? 'warn' : /정상|양호/.test(t || '') ? 'ok' : 'na';
 const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</span>` : '';
 
-const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, payDays: [{ from: '2026-11', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
+const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, payDays: [{ from: '2026-07', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
   '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
   '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
@@ -118,6 +118,7 @@ function allCats() { return [...new Set([...Object.keys(state.rules).filter(k =>
 function subsOf(cat) { return [...new Set(state.tx.filter(t => t.kind === 'expense' && catOf(t) === cat && subOf(t)).map(subOf))].sort((a, b) => a.localeCompare(b, 'ko')); }
 
 // ---------- card billing cycle ----------
+const PAY_FIRST_YM = '2026-07';   // 결제 목록 시작월 (이전에 저장된 결제일 기록이 더 늦게 시작해도 여기서부터)
 const PAY_DAYS_OK = [1, 5, 7, 8, 10, 12, 13, 14, 15, 17, 18, 20, 21, 23];   // 하나카드 결제일 표(일시불)에 있는 결제일
 const addM = (ym, k) => { const [y, m] = ym.split('-').map(Number), n = y * 12 + m - 1 + k; return `${Math.floor(n / 12)}-${p2(n % 12 + 1)}`; };
 const ymDay = (ym, d) => { const [y, m] = ym.split('-').map(Number); return `${ym}-${p2(Math.min(d, new Date(Date.UTC(y, m, 0)).getUTCDate()))}`; };   // 그 달 말일을 넘으면 말일로
@@ -129,9 +130,9 @@ function periodEnd(ym, day) {   // 청구 기간 종료일: 12일 이하 전월 
   return day <= 12 ? ymDay(addM(ym, -1), day + 17) : day === 13 ? isoOf(dnum(ym + '-01') - 1) : ymDay(ym, day - 13);
 }
 function payments(today) {   // 첫 결제월부터 (오늘 달 + 2개월)까지: [{ ym, pay, start, end }]
-  const pd = payDaysOf(), last = addM(today.slice(0, 7), 2), list = [];
-  for (let ym = pd[0].from, k = 0; (ym <= last || !list.length) && k < 240; ym = addM(ym, 1), k++) {
-    const day = pd.filter(e => e.from <= ym).pop().day, prev = list[list.length - 1];
+  const pd = payDaysOf(), last = addM(today.slice(0, 7), 2), list = [], first = pd[0].from < PAY_FIRST_YM ? pd[0].from : PAY_FIRST_YM;
+  for (let ym = first, k = 0; (ym <= last || !list.length) && k < 240; ym = addM(ym, 1), k++) {
+    const day = (pd.filter(e => e.from <= ym).pop() || pd[0]).day, prev = list[list.length - 1];   // 첫 기록보다 앞선 달은 첫 결제일을 그대로 씀
     list.push({ ym, pay: ymDay(ym, day), start: prev ? isoOf(dnum(prev.end) + 1) : periodStart(ym, day), end: periodEnd(ym, day) });
   }
   return list;
@@ -787,7 +788,6 @@ const handlers = {
     const day = parseInt($('#pdDay').value, 10), from = $('#pdFrom').value, cur = payDaysOf();
     if (!PAY_DAYS_OK.includes(day)) throw new Error('하나카드 결제일 표에 있는 날짜만 고를 수 있어요');
     if (!/^\d{4}-\d{2}$/.test(from)) throw new Error('결제월을 입력하세요');
-    if (from < cur[0].from) throw new Error(`${cur[0].from} 결제월 이후로 입력하세요`);
     const payDays = [...cur.filter(e => e.from !== from), { from, day }].sort((a, b) => a.from < b.from ? -1 : 1);
     const merged = { ...state.settings, payDays };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; state.pSel = null; toast('결제일 변경 추가됨'); render();
