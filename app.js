@@ -22,7 +22,8 @@ const loadScript = src => new Promise((res, rej) => { const s = document.createE
 const statusCls = t => /⚠|초과|부족|위험/.test(t || '') ? 'warn' : /정상|양호/.test(t || '') ? 'ok' : 'na';
 const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</span>` : '';
 
-const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, deliveryLimit: 5, boozeYear: 2400000, payDays: [{ from: '2026-07', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
+const DELIVERY_PAT = /우아한형제들|배달의민족|배민|땡겨요|요기요|쿠팡이츠|위대한상상/;   // 배달 앱 사용처 → 가져올 때 '식비>배달'로 자동 분류
+const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, payDays: [{ from: '2026-07', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
   '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
   '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
@@ -306,6 +307,33 @@ function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마�
   return `<div id="mChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div><div class="lg"><span><i style="background:var(--inc)"></i>수입</span><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
 }
 
+function catLimitsOf() {   // 대분류별 한도 목록. catLimits가 없으면 예전 boozeYear를 옮겨 온 기본값
+  const S = state.settings;
+  if (Array.isArray(S.catLimits)) return S.catLimits.filter(e => e && typeof e.key === 'string' && e.key && Number(e.amount) > 0 && (e.unit === 'm' || e.unit === 'y')).map(e => ({ key: e.key, amount: Number(e.amount), unit: e.unit }));
+  return [{ key: '식비>술/유흥', amount: Number(S.boozeYear) > 0 ? Number(S.boozeYear) : 2400000, unit: 'y' }];
+}
+const limMatch = (key, t) => key.includes('>') ? ((t.cls || '') === key || (t.cls || '').startsWith(key + '>')) : catOf(t) === key;
+function catBarChart(items, limit, selected, stack, single) {   // items[i] = { k:'YYYY-MM', label, v, parts:{소분류:금액} }. stack = {order:[이름..], color:{이름:css}} 이면 소분류별 누적, 아니면 single 색 단색. barChart와 같은 칸 폭
+  const SLOT = 76, H = 200, pl = 8, pr = 8, pt = 24, pb = 26, W = items.length * SLOT + pl + pr, bw = 30;
+  const maxV = Math.max((limit || 0) * 1.15, ...items.map(i => i.v), 1), y = v => pt + (H - pt - pb) * (1 - v / maxV);
+  let g = '';
+  items.forEach((it, i) => {
+    const sx = pl + SLOT * i, x = sx + (SLOT - bw) / 2, sel = it.k === selected, over = limit > 0 && it.v > limit;
+    g += `<g data-month="${esc(it.k)}" style="cursor:pointer"${selected && !sel ? ' opacity=".5"' : ''}>`;
+    if (sel) g += `<rect x="${sx + 2}" y="2" width="${SLOT - 4}" height="${H - 4}" rx="8" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)" stroke-width="1.5"/>`;
+    g += `<rect x="${sx}" y="0" width="${SLOT}" height="${H}" fill="transparent"/>`;
+    if (it.v > 0) {
+      if (stack) { let acc = 0; stack.order.forEach(n => { const v = (it.parts || {})[n] || 0; if (v > 0) g += `<rect x="${x}" y="${y(acc + v)}" width="${bw}" height="${Math.max(0, y(acc) - y(acc + v))}" fill="${stack.color[n]}"${n === '기타' ? ' fill-opacity=".35"' : ''}/>`; acc += v; }); }
+      else g += `<rect x="${x}" y="${y(it.v)}" width="${bw}" height="${y(0) - y(it.v)}" fill="${single || 'var(--c2)'}"/>`;
+      if (over) g += `<rect x="${x - 1}" y="${y(it.v)}" width="${bw + 2}" height="${y(0) - y(it.v)}" fill="none" stroke="var(--bad)" stroke-width="1.5" pointer-events="none"/>`;
+      g += `<text x="${x + bw / 2}" y="${y(it.v) - 6}" text-anchor="middle" style="fill:${over ? 'var(--bad)' : 'var(--text)'};font-size:10px${over ? ';font-weight:700' : ''}">${(it.v / 10000).toFixed(it.v < 100000 ? 1 : 0)}만</text>`;
+    }
+    g += `<text x="${sx + SLOT / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text></g>`;
+  });
+  if (limit > 0) { const ly = y(limit); g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="var(--bad)" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`; }
+  return `<div id="catChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div>`;
+}
+
 function saveAScroll() {   // 분석 탭의 내부 스크롤 영역 위치 저장 (화면에 분석 탭이 그려져 있을 때만)
   const cw = $('#mChartWrap'), tw = $('#mTableWrap');
   if (cw && tw) state.aScroll = { l: cw.scrollLeft, t: tw.scrollTop };
@@ -401,6 +429,49 @@ function viewAnalysis() {
     ${[...mrows].reverse().map(m => { const sel = m.k === state.aMonth; return `<tr data-month="${m.k}" style="cursor:pointer;${sel ? 'background:var(--bg)' : ''}"><td style="${sel ? 'box-shadow:inset 3px 0 0 var(--accent);font-weight:700' : ''}">${m.k}<span class="note">${note(m.k)}</span></td><td><b>${won(m.total)}</b></td><td>${won(incBy[m.k] || 0)}</td><td>${tag(m.total > S.monthLimit ? '⚠ 초과' : '정상')}</td><td>${m.deliv}건</td><td>${won(m.delivAmt)}</td><td>${won(m.booze)}</td></tr>`; }).join('')}</table></div>
     <div class="note">진행 중이거나 일부 기간만 있는 달은 한도 판정이 의미 없습니다.</div></div>`;
 
+  // --- 대분류별 월별 지출 ---
+  const CL = catLimitsOf(), catTot = {};
+  spend.forEach(t => { const c = catOf(t); catTot[c] = (catTot[c] || 0) + t.amount; });
+  const chipKeys = Object.keys(catTot).sort((a, b) => catTot[b] - catTot[a]);
+  const allCatKeys = new Set(); spend.forEach(t => { const c = catOf(t), s = subOf(t); allCatKeys.add(c); if (s) allCatKeys.add(c + '>' + s); });
+  // 칩: 윗줄은 대분류, 아랫줄은 선택한 대분류의 소분류만
+  if (!(chipKeys.includes(state.catSel) || (state.catSel && state.catSel.includes('>') && allCatKeys.has(state.catSel)))) state.catSel = chipKeys.includes('식비') ? '식비' : chipKeys[0];
+  const csel = state.catSel, cmLim = (CL.find(e => e.unit === 'm' && e.key === csel) || {}).amount || 0;
+  const isSub = !!csel && csel.includes('>'), pcat = csel ? csel.split('>')[0] : '';
+  const PAL = ['var(--c1)', 'var(--c3)', 'var(--c2)', 'var(--c4)', 'var(--c5)'], subTot = {};   // 상위 5개 소분류만 색, 나머지는 '기타'
+  if (csel) keys.forEach(k => B[k].items.forEach(t => { if (catOf(t) === pcat) { const s = subOf(t) || '기타'; subTot[s] = (subTot[s] || 0) + t.amount; } }));
+  const topSubs = Object.keys(subTot).filter(s => s !== '기타').sort((a, b) => subTot[b] - subTot[a]).slice(0, 5);
+  if (!state.subColor) state.subColor = {};
+  const usedC = new Set(), subIdx = {};
+  topSubs.forEach(s => { const i = state.subColor[pcat + '>' + s]; if (Number.isInteger(i) && i >= 0 && i < PAL.length && !usedC.has(i)) { subIdx[s] = i; usedC.add(i); } });
+  topSubs.forEach(s => { if (subIdx[s] == null) { let i = 0; while (usedC.has(i)) i++; subIdx[s] = i; usedC.add(i); state.subColor[pcat + '>' + s] = i; } });
+  const stackOrder = [...topSubs, ...(Object.keys(subTot).some(s => !topSubs.includes(s)) ? ['기타'] : [])], stackColor = { '기타': 'var(--sub)' };
+  topSubs.forEach(s => stackColor[s] = PAL[subIdx[s]]);
+  const crows = keys.map(k => {
+    const its = csel ? B[k].items.filter(t => limMatch(csel, t)) : [], parts = {};
+    if (csel && !isSub) its.forEach(t => { let n = subOf(t) || '기타'; if (!topSubs.includes(n)) n = '기타'; parts[n] = (parts[n] || 0) + t.amount; });
+    return { k, label: k.slice(2), v: its.reduce((s, t) => s + t.amount, 0), parts };
+  });
+  const subChips = Object.keys(subTot).filter(s => s !== '기타' && allCatKeys.has(pcat + '>' + s)).sort((a, b) => subTot[b] - subTot[a]).map(s => pcat + '>' + s);
+  const chipHtml = c => {
+    const sub = c.includes('>'), sel = c === csel || (!sub && c === pcat), p = c.split('>');   // 소분류를 보고 있어도 부모 대분류 칩은 선택 상태
+    const st = sub
+      ? `font:inherit;font-size:11px;padding:2px 8px;border-radius:12px;cursor:pointer;border:1px solid ${sel ? 'var(--accent)' : 'var(--line)'};background:${sel ? 'color-mix(in srgb,var(--accent) 14%,transparent)' : 'transparent'};color:${sel ? 'var(--accent)' : 'var(--sub)'}${sel ? ';font-weight:600' : ''}`
+      : `font:inherit;font-size:12px;padding:4px 10px;border-radius:14px;cursor:pointer;border:1px solid ${sel ? 'var(--accent)' : 'var(--line)'};background:${sel ? 'var(--accent)' : 'var(--bg)'};color:${sel ? '#fff' : 'var(--sub)'}`;
+    return `<button type="button" data-act="catSel" data-v="${esc(c)}" style="${st}">${sub ? `<span style="opacity:.6">${esc(p[0])} ›</span> ${esc(p.slice(1).join('>'))}` : esc(c)}</button>`;
+  };
+  const legendHtml = csel && !isSub && stackOrder.length ? `<div class="lg">${stackOrder.map(n => {
+    const key = pcat + '>' + n, ok = n !== '기타' && allCatKeys.has(key);
+    const sw = `<i style="background:${stackColor[n]}${n === '기타' ? ';opacity:.35' : ''}"></i>`, tx = `${sw}${esc(n)}`;
+    return ok ? `<button type="button" data-act="catSel" data-v="${esc(key)}" style="font:inherit;font-size:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left">${tx}</button>` : `<span>${tx}</span>`;
+  }).join('')}</div>` : '';
+  if (csel) h += `<div class="card"><h2>대분류별 월별 지출 <small>칩을 누르면 분류가 바뀝니다 · 막대를 누르면 아래 월 상세가 바뀝니다</small></h2>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;align-items:center">${chipKeys.map(chipHtml).join('')}</div>
+    ${subChips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;padding-left:10px;border-left:2px solid var(--line);align-items:center">${subChips.map(chipHtml).join('')}</div>` : ''}
+    ${catBarChart(crows, cmLim, state.aMonth, isSub ? null : { order: stackOrder, color: stackColor }, isSub ? (subIdx[csel.split('>')[1]] != null ? PAL[subIdx[csel.split('>')[1]]] : 'var(--c6)') : null)}
+    ${legendHtml}
+    ${cmLim ? `<div class="note">한도 ${won(cmLim)}</div>` : ''}</div>`;
+
   // --- month detail ---
   const cur = B[state.aMonth], cats = Object.entries(cur.cats).sort((a, b) => b[1] - a[1]);
   const irreg = cur.items.filter(t => t._n === '비정기').sort((a, b) => a.tx_date < b.tx_date ? 1 : -1), top = [...cur.items].sort((a, b) => b.amount - a.amount).slice(0, 8);
@@ -418,16 +489,26 @@ function viewAnalysis() {
     <div class="secT">지출</div>
     ${meter('카드 사용액 / 카드 한도', cardUse, S.cardLimit, `<b>${won(cardUse)}</b> / ${won(S.cardLimit)} ${tag(cardUse > S.cardLimit ? '⚠ 한도 초과' : '정상')}`)}
     ${meter('월 생활비 한도', cur.total, S.monthLimit, `<b>${won(cur.total)}</b> / ${won(S.monthLimit)}${cur.total > S.monthLimit ? ' · ' + won(cur.total - S.monthLimit) + ' 초과' : ''}`)}
-    ${meter('배달 (월 한도 횟수)', cur.deliv, S.deliveryLimit, `<b>${cur.deliv}건</b> · ${won(cur.delivAmt)}`)}
-    <div class="two"><div><div class="note" style="margin:0 0 6px">대분류별</div>${cats.map(([c, v]) => `<div class="hbar go" data-cat="${esc(c)}" style="cursor:pointer"><span class="lbl">${esc(c)}</span><span class="track"><span style="width:${(v / cats[0][1] * 100).toFixed(1)}%"></span></span><span class="val">${won(v)} · ${pct(v / cur.total)}</span></div>`).join('')}</div>
-      <div><div class="note" style="margin:0 0 6px">큰 지출 TOP 8</div><table>${top.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div></div>
-    <div class="note" style="margin:14px 0 6px">비정기 ${irreg.length}건 · ${won(cur['비정기'])}</div>
-    ${irreg.length ? `<table>${irreg.map(t => `<tr><td>${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${esc(t.cls)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table>` : '<div class="note">없음</div>'}
+    ${(() => {   // 대분류별: 같은 폭·같은 눈금(가장 큰 대분류 기준). ▸ 버튼으로 소분류 펼치기(기본은 닫힘). 한도는 값 아래 작은 줄
+      const limOf = k => (CL.find(e => e.unit === 'm' && e.key === k) || {}).amount || 0, open = state.mdOpen ??= {};
+      const mx = Math.max(cats.length ? cats[0][1] : 1, ...CL.filter(e => e.unit === 'm' && cats.some(([c]) => e.key === c || e.key.startsWith(c + '>'))).map(e => e.amount));   // 눈금: 가장 큰 대분류와 한도 중 큰 값 (한도선이 막대 안에 들어오게)
+      const subsOfCat = c => { const m = {}; cur.items.forEach(t => { if (catOf(t) === c && subOf(t)) m[subOf(t)] = (m[subOf(t)] || 0) + t.amount; }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+      const withSubs = cats.filter(([c]) => subsOfCat(c).length).map(([c]) => c), allOpen = withSubs.length && withSubs.every(c => open[c]);
+      const tg = c => `<button type="button" data-act="mdToggle" data-v="${esc(c)}" aria-label="${esc(c)} 소분류 ${open[c] ? '닫기' : '열기'}" style="font:inherit;font-size:10px;width:18px;height:18px;padding:0;margin-right:4px;border:1px solid var(--line);border-radius:4px;background:${open[c] ? 'var(--accent)' : 'var(--bg)'};color:${open[c] ? '#fff' : 'var(--sub)'};cursor:pointer;line-height:1">${open[c] ? '▾' : '▸'}</button>`;
+      const bar = (lbl, v, lim, extra) => { const r = lim ? v / lim : 0, bc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--caution)' : '', tc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--warn)' : 'var(--sub)';   // 80% 초과 노랑, 100% 초과 빨강
+        const ln = lim ? `<i style="position:absolute;top:-2px;bottom:-2px;left:calc(${Math.min(100, lim / mx * 100).toFixed(1)}% - 1px);border-left:2px dashed ${r > 1 ? 'var(--bad)' : 'var(--text)'};opacity:.7"></i>` : '';   // 한도선(점선)
+        return `<div class="hbar${extra.cat ? ' go' : ''}"${extra.cat ? ` data-cat="${esc(extra.cat)}" style="cursor:pointer"` : ''}><span class="lbl" style="${extra.sub ? 'padding-left:14px;font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis' : 'display:flex;align-items:center;white-space:nowrap'}">${lbl}</span><span class="track" style="position:relative;overflow:visible"><span style="width:${(v / mx * 100).toFixed(1)}%;border-radius:4px${bc ? ';background:' + bc : extra.sub ? ';opacity:.6' : ''}"></span>${ln}</span><span class="val">${won(v)} · ${pct(v / cur.total)}${lim ? `<div style="font-size:11px;color:${tc}">한도 ${won(lim)}</div>` : ''}</span></div>`; };
+      const head = `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px"><span class="note" style="margin:0">대분류별</span>${withSubs.length ? `<button type="button" data-act="mdAll" style="font:inherit;font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--sub);cursor:pointer">${allOpen ? '모두 닫기' : '모두 열기'}</button>` : ''}</div>`;
+      return head + cats.map(([c, v]) => { const ss = subsOfCat(c); return bar((ss.length ? tg(c) : '<span style="display:inline-block;width:22px"></span>') + esc(c), v, limOf(c), { cat: c }) + (ss.length && open[c] ? ss.map(([s, u]) => bar('└ ' + esc(s), u, limOf(c + '>' + s), { sub: true })).join('') : ''); }).join('');
+    })()}
+    <div class="two" style="margin-top:14px"><div><div class="note" style="margin:0 0 6px">큰 지출 TOP 8</div><table>${top.map(t => `<tr><td style="text-align:left">${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div>
+      <div><div class="note" style="margin:0 0 6px">비정기 ${irreg.length}건 · ${won(cur['비정기'])}</div>
+      ${irreg.length ? `<table>${irreg.map(t => `<tr><td style="text-align:left">${mmdd(t.tx_date)} ${esc(t.place || t.memo)}<div class="note" style="margin:0">${esc((t.cls || '').replace('>', ' › '))}</div></td><td>${won(t.amount)}</td></tr>`).join('')}</table>` : '<div class="note">없음</div>'}</div></div>
     ${cur.cats['미분류'] ? `<div class="banner warn" style="margin-top:12px">분류가 비어 있는 지출 ${won(cur.cats['미분류'])}이 있습니다.</div>` : ''}</div>`;
 
   // --- year limits ---
-  const yr = today.slice(0, 4), boozeYtd = spend.filter(t => t._m.startsWith(yr) && /술\/유흥/.test(t.cls)).reduce((s, t) => s + t.amount, 0);
-  h += `<div class="card"><h2>연간 한도 <small>${yr}년 누적</small></h2>${meter('술·유흥', boozeYtd, S.boozeYear, `<b>${won(boozeYtd)}</b> / ${won(S.boozeYear)} (${pct(boozeYtd / S.boozeYear)})`)}</div>`;
+  const yr = today.slice(0, 4), yLims = CL.filter(e => e.unit === 'y');
+  if (yLims.length) h += `<div class="card"><h2>연간 한도 <small>${yr}년 누적</small></h2>${yLims.map(e => { const u = spend.filter(t => t._m.startsWith(yr) && limMatch(e.key, t)).reduce((s, t) => s + t.amount, 0); return meter(esc(e.key.replace('>', ' › ')), u, e.amount, `<b>${won(u)}</b> / ${won(e.amount)} (${pct(u / e.amount)})`); }).join('')}</div>`;
 
   // --- 대전사랑카드(지역화폐) ---
   const snaps = [...(S.prepaidSnaps || [])].sort((a, b) => a.date < b.date ? -1 : 1);
@@ -513,10 +594,13 @@ function viewAnalysis() {
     const d = $('#mDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
   cw.onclick = pick; tw.onclick = pick;
+  const cc = $('#catChartWrap');
+  if (cc) { cc.onclick = pick; const g = cc.querySelector(`g[data-month="${state.aMonth}"]`); let right = 8 + (keys.indexOf(state.aMonth) + 1) * 76; try { if (g) { const b = g.getBBox(); right = b.x + b.width; } } catch (_) {} cc.scrollLeft = Math.max(0, right - cc.clientWidth); }
   view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: ['수입>' + el.dataset.inc], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
-  view().querySelectorAll('[data-cat]').forEach(el => el.onclick = () => {
+  view().querySelectorAll('[data-cat]').forEach(el => el.onclick = e => {
+    if (e.target.closest('[data-act]')) return;   // ▸ 펼치기 버튼은 내역으로 이동하지 않음
     state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; state.aAlign = 'month'; viewAnalysis(); };
@@ -527,11 +611,19 @@ function viewAnalysis() {
 function viewSettings() {
   const S = state.settings, rules = Object.entries(state.rules).sort((a, b) => a[0].localeCompare(b[0], 'ko'));
   const pDays = payDaysOf(), pl = payments(todayISO()), np = pl[nextPayIdx(pl, todayISO())], pdFrom = dnum(np.pay) - dnum(todayISO()) <= 7 ? addM(np.ym, 1) : np.ym;   // 새 결제일 기본 적용월
+  const cLims = catLimitsOf(), clKeys = [...new Set(state.tx.filter(t => t.kind === 'expense' && t.cls && !t.cls.startsWith('이체')).flatMap(t => { const c = catOf(t), s = subOf(t); return s ? [c, c + '>' + s] : [c]; }))].sort((a, b) => a.localeCompare(b, 'ko'));
   view().innerHTML = `<div class="card"><h2>한도·카드 설정</h2><div class="row2">
       <div><label class="f">월 생활비 한도(원)</label><input id="sMonth" inputmode="numeric" value="${S.monthLimit}"></div><div><label class="f">카드 사용 한도(원)</label><input id="sCard" inputmode="numeric" value="${S.cardLimit}"></div>
-      <div><label class="f">배달 월 한도(회)</label><input id="sDel" inputmode="numeric" value="${S.deliveryLimit}"></div><div><label class="f">술·유흥 연 한도(원)</label><input id="sBooze" inputmode="numeric" value="${S.boozeYear}"></div>
       <div><label class="f">마이너스 인출 한도(원)</label><input id="sOd" inputmode="numeric" value="${S.overdraftLimit}"></div></div>
     <button class="btn" data-act="saveSettings">설정 저장</button></div>
+
+    <div class="card"><h2>대분류별 한도 <small>대분류 또는 '대분류 › 소분류' · 월/연 기준</small></h2>
+      ${cLims.length ? `<table>${cLims.map(e => `<tr><td>${esc(e.key.replace('>', ' › '))}</td><td>${won(e.amount)}</td><td>${e.unit === 'y' ? '연' : '월'}</td><td><button class="btn sec sm" data-act="delCatLimit" data-key="${esc(e.key)}">삭제</button></td></tr>`).join('')}</table>` : '<div class="note">설정된 한도가 없습니다.</div>'}
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"><select id="clKey" style="flex:1 1 140px;min-width:0">${clKeys.map(k => `<option value="${esc(k)}">${esc(k.replace('>', ' › '))}</option>`).join('')}</select>
+        <input id="clAmt" inputmode="numeric" placeholder="금액(원)" autocomplete="off" style="flex:1 1 110px;min-width:0">
+        <select id="clUnit" style="flex:0 0 72px;min-width:0"><option value="m">월</option><option value="y">연</option></select></div>
+      <button class="btn sec" data-act="addCatLimit">추가</button>
+      <div class="note">같은 분류를 다시 추가하면 바뀝니다. 월 한도는 분석 탭의 월 상세·대분류별 차트에, 연 한도는 '연간 한도'에 표시돼요.</div></div>
 
     <div class="card"><h2>카드결제일(하나카드 기준)</h2>
       <table>${pDays.map(e => `<tr><td>${esc(e.from)} 결제부터</td><td><b>${e.day}일</b></td></tr>`).join('')}</table>
@@ -796,11 +888,25 @@ const handlers = {
   hMore: () => { state.hLimit = (state.hLimit || 200) + 200; renderHistoryBody(); },
   saveSettings: () => run(async () => {
     const n = id => parseInt($(id).value.replace(/\D/g, ''), 10);
-    const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), deliveryLimit: n('#sDel'), boozeYear: n('#sBooze'), overdraftLimit: n('#sOd') };
+    const s = { monthLimit: n('#sMonth'), cardLimit: n('#sCard'), overdraftLimit: n('#sOd') };
     if (Object.values(s).some(v => !v && v !== 0)) throw new Error('숫자를 확인하세요'); if (s.overdraftLimit < 0) throw new Error('마이너스 인출 한도는 0 이상이어야 해요');
     const merged = { ...state.settings, ...s };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('설정 저장됨');
   }),
+  addCatLimit: () => run(async () => {
+    const key = $('#clKey').value, amount = parseInt($('#clAmt').value.replace(/\D/g, ''), 10), unit = $('#clUnit').value === 'y' ? 'y' : 'm';
+    if (!key) throw new Error('분류를 선택하세요'); if (!(amount > 0)) throw new Error('금액을 확인하세요');
+    const catLimits = [...catLimitsOf().filter(e => e.key !== key), { key, amount, unit }];
+    const merged = { ...state.settings, catLimits };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('한도 저장됨'); render();
+  }),
+  delCatLimit: el => run(async () => {
+    const catLimits = catLimitsOf().filter(e => e.key !== el.dataset.key), merged = { ...state.settings, catLimits };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('한도 삭제됨'); render();
+  }),
+  mdToggle: el => { const o = state.mdOpen ??= {}; o[el.dataset.v] = !o[el.dataset.v]; viewAnalysis(); },
+  mdAll: el => { const o = state.mdOpen ??= {}, cats = [...$('#mDetail').querySelectorAll('[data-act="mdToggle"]')].map(b => b.dataset.v), all = cats.every(c => o[c]); cats.forEach(c => o[c] = !all); viewAnalysis(); },
+  catSel: el => { const v = el.dataset.v; state.catSel = v.includes('>') && state.catSel === v ? v.split('>')[0] : v; viewAnalysis(); },   // 선택된 소분류 칩을 다시 누르면 해제(부모 대분류로)
   addPayDay: () => run(async () => {
     const day = parseInt($('#pdDay').value, 10), from = $('#pdFrom').value, cur = payDaysOf();
     if (!PAY_DAYS_OK.includes(day)) throw new Error('하나카드 결제일 표에 있는 날짜만 고를 수 있어요');
@@ -1049,6 +1155,12 @@ function histMap() {   // 같은 사용처를 전에 분류한 대로 (가장 �
 }
 function buildCands() {
   const imp = state.imp, H = histMap(), cands = [], seen = {};
+  const look0 = H.look;   // 배달 앱 사용처(캐시백 제외)는 기록이 이미 '식비>배달…'이면 그대로, 아니면 '식비>배달'로 강제
+  H.look = (isInc, place) => {
+    const h = look0(isInc, place), p = String(place || '');
+    if (isInc || !DELIVERY_PAT.test(p) || /캐시백/.test(p)) return h;
+    return (h && h.cls && h.cls.startsWith('식비>배달')) ? h : { cls: '식비>배달', tag: h ? h.tag : '' };
+  };
   const keyOf = (pre, date, amt, place, extra) => { const k0 = `${pre}|${date}|${amt}|${place}|${extra || ''}`; seen[k0] = (seen[k0] || 0) + 1; return `${k0}|${seen[k0]}`; };
   for (const f of imp.files) {
     if (f.type === 'card') {
