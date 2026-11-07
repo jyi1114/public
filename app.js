@@ -265,7 +265,7 @@ function renderHistoryBody() {
   const cmpDate = (a, b) => a.tx_date < b.tx_date ? 1 : a.tx_date > b.tx_date ? -1 : ((a.created_at || '') < (b.created_at || '') ? 1 : (a.created_at || '') > (b.created_at || '') ? -1 : 0);
   const kindOk = t => !F.kind || (F.kind === 'expense' ? isSpend(t) : F.kind === 'income' ? t.kind === 'income' : t.kind === 'expense' && !isSpend(t));
   const list = state.tx.filter(t => kindOk(t) && (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(hCatKey(t)))
-    && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : (t.place + ' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
+    && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : q === '일반' ? isSpend(t) && catOf(t) !== '미분류' && !subOf(t) : q.endsWith('>일반') ? isSpend(t) && !subOf(t) && catOf(t) === q.slice(0, -3) : (t.place +' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
   list.sort(state.hSort === 'old' ? (a, b) => -cmpDate(a, b) : state.hSort === 'high' ? (a, b) => (b.amount - a.amount) || cmpDate(a, b) : state.hSort === 'low' ? (a, b) => (a.amount - b.amount) || cmpDate(a, b) : cmpDate);
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
   const dayTot = {}; if (!flat) list.forEach(t => { if (isSpend(t)) dayTot[t.tx_date] = (dayTot[t.tx_date] || 0) + t.amount; });
@@ -312,7 +312,7 @@ function catLimitsOf() {   // 대분류별 한도 목록. catLimits가 없으면
   if (Array.isArray(S.catLimits)) return S.catLimits.filter(e => e && typeof e.key === 'string' && e.key && Number(e.amount) > 0 && (e.unit === 'm' || e.unit === 'y')).map(e => ({ key: e.key, amount: Number(e.amount), unit: e.unit }));
   return [{ key: '식비>술/유흥', amount: Number(S.boozeYear) > 0 ? Number(S.boozeYear) : 2400000, unit: 'y' }];
 }
-const limMatch = (key, t) => key.includes('>') ? ((t.cls || '') === key || (t.cls || '').startsWith(key + '>')) : catOf(t) === key;
+const limMatch = (key, t) => key.includes('>') ? ((t.cls || '') === key || (t.cls || '').startsWith(key + '>') || (!subOf(t) && key === catOf(t) + '>일반')) : catOf(t) === key;
 function catBarChart(items, limit, selected, stack, single) {   // items[i] = { k:'YYYY-MM', label, v, parts:{소분류:금액} }. stack = {order:[이름..], color:{이름:css}} 이면 소분류별 누적, 아니면 single 색 단색. barChart와 같은 칸 폭
   const SLOT = 76, H = 200, pl = 8, pr = 8, pt = 24, pb = 26, W = items.length * SLOT + pl + pr, bw = 30;
   const maxV = Math.max((limit || 0) * 1.15, ...items.map(i => i.v), 1), y = v => pt + (H - pt - pb) * (1 - v / maxV);
@@ -323,7 +323,7 @@ function catBarChart(items, limit, selected, stack, single) {   // items[i] = { 
     if (sel) g += `<rect x="${sx + 2}" y="2" width="${SLOT - 4}" height="${H - 4}" rx="8" fill="var(--accent)" fill-opacity=".14" stroke="var(--accent)" stroke-width="1.5"/>`;
     g += `<rect x="${sx}" y="0" width="${SLOT}" height="${H}" fill="transparent"/>`;
     if (it.v > 0) {
-      if (stack) { let acc = 0; stack.order.forEach(n => { const v = (it.parts || {})[n] || 0; if (v > 0) g += `<rect x="${x}" y="${y(acc + v)}" width="${bw}" height="${Math.max(0, y(acc) - y(acc + v))}" fill="${stack.color[n]}"${n === '기타' ? ' fill-opacity=".35"' : ''}/>`; acc += v; }); }
+      if (stack) { let acc = 0; stack.order.forEach(n => { const v = (it.parts || {})[n] || 0; if (v > 0) g += `<rect x="${x}" y="${y(acc + v)}" width="${bw}" height="${Math.max(0, y(acc) - y(acc + v))}" fill="${stack.color[n]}"${n === '그 외' ? ' fill-opacity=".35"' : ''}/>`; acc += v; }); }
       else g += `<rect x="${x}" y="${y(it.v)}" width="${bw}" height="${y(0) - y(it.v)}" fill="${single || 'var(--c2)'}"/>`;
       if (over) g += `<rect x="${x - 1}" y="${y(it.v)}" width="${bw + 2}" height="${y(0) - y(it.v)}" fill="none" stroke="var(--bad)" stroke-width="1.5" pointer-events="none"/>`;
       g += `<text x="${x + bw / 2}" y="${y(it.v) - 6}" text-anchor="middle" style="fill:${over ? 'var(--bad)' : 'var(--text)'};font-size:10px${over ? ';font-weight:700' : ''}">${(it.v / 10000).toFixed(it.v < 100000 ? 1 : 0)}만</text>`;
@@ -433,26 +433,26 @@ function viewAnalysis() {
   const CL = catLimitsOf(), catTot = {};
   spend.forEach(t => { const c = catOf(t); catTot[c] = (catTot[c] || 0) + t.amount; });
   const chipKeys = Object.keys(catTot).sort((a, b) => catTot[b] - catTot[a]);
-  const allCatKeys = new Set(); spend.forEach(t => { const c = catOf(t), s = subOf(t); allCatKeys.add(c); if (s) allCatKeys.add(c + '>' + s); });
+  const allCatKeys = new Set(); spend.forEach(t => { const c = catOf(t), s = subOf(t); allCatKeys.add(c); allCatKeys.add(c + '>' + (s || '일반')); });
   // 칩: 윗줄은 대분류, 아랫줄은 선택한 대분류의 소분류만
   if (!(chipKeys.includes(state.catSel) || (state.catSel && state.catSel.includes('>') && allCatKeys.has(state.catSel)))) state.catSel = chipKeys.includes('식비') ? '식비' : chipKeys[0];
   const csel = state.catSel, cmLim = (CL.find(e => e.unit === 'm' && e.key === csel) || {}).amount || 0;
   const isSub = !!csel && csel.includes('>'), pcat = csel ? csel.split('>')[0] : '';
-  const PAL = ['var(--c1)', 'var(--c3)', 'var(--c2)', 'var(--c4)', 'var(--c5)'], subTot = {};   // 상위 5개 소분류만 색, 나머지는 '기타'
-  if (csel) keys.forEach(k => B[k].items.forEach(t => { if (catOf(t) === pcat) { const s = subOf(t) || '기타'; subTot[s] = (subTot[s] || 0) + t.amount; } }));
-  const topSubs = Object.keys(subTot).filter(s => s !== '기타').sort((a, b) => subTot[b] - subTot[a]).slice(0, 5);
+  const PAL = ['var(--c1)', 'var(--c3)', 'var(--c2)', 'var(--c4)', 'var(--c5)'], subTot = {};   // 상위 5개 소분류만 색, 나머지는 '그 외'. 소분류 없는 지출은 '일반'
+  if (csel) keys.forEach(k => B[k].items.forEach(t => { if (catOf(t) === pcat) { const s = subOf(t) || '일반'; subTot[s] = (subTot[s] || 0) + t.amount; } }));
+  const topSubs = Object.keys(subTot).sort((a, b) => subTot[b] - subTot[a]).slice(0, 5);
   if (!state.subColor) state.subColor = {};
   const usedC = new Set(), subIdx = {};
   topSubs.forEach(s => { const i = state.subColor[pcat + '>' + s]; if (Number.isInteger(i) && i >= 0 && i < PAL.length && !usedC.has(i)) { subIdx[s] = i; usedC.add(i); } });
   topSubs.forEach(s => { if (subIdx[s] == null) { let i = 0; while (usedC.has(i)) i++; subIdx[s] = i; usedC.add(i); state.subColor[pcat + '>' + s] = i; } });
-  const stackOrder = [...topSubs, ...(Object.keys(subTot).some(s => !topSubs.includes(s)) ? ['기타'] : [])], stackColor = { '기타': 'var(--sub)' };
+  const stackOrder = [...topSubs, ...(Object.keys(subTot).some(s => !topSubs.includes(s)) ? ['그 외'] : [])], stackColor = { '그 외': 'var(--sub)' };
   topSubs.forEach(s => stackColor[s] = PAL[subIdx[s]]);
   const crows = keys.map(k => {
     const its = csel ? B[k].items.filter(t => limMatch(csel, t)) : [], parts = {};
-    if (csel && !isSub) its.forEach(t => { let n = subOf(t) || '기타'; if (!topSubs.includes(n)) n = '기타'; parts[n] = (parts[n] || 0) + t.amount; });
+    if (csel && !isSub) its.forEach(t => { let n = subOf(t) || '일반'; if (!topSubs.includes(n)) n = '그 외'; parts[n] = (parts[n] || 0) + t.amount; });
     return { k, label: k.slice(2), v: its.reduce((s, t) => s + t.amount, 0), parts };
   });
-  const subChips = Object.keys(subTot).filter(s => s !== '기타' && allCatKeys.has(pcat + '>' + s)).sort((a, b) => subTot[b] - subTot[a]).map(s => pcat + '>' + s);
+  const subChips = Object.keys(subTot).filter(s => allCatKeys.has(pcat + '>' + s)).sort((a, b) => subTot[b] - subTot[a]).map(s => pcat + '>' + s);
   const chipHtml = c => {
     const sub = c.includes('>'), sel = c === csel || (!sub && c === pcat), p = c.split('>');   // 소분류를 보고 있어도 부모 대분류 칩은 선택 상태
     const st = sub
@@ -461,11 +461,11 @@ function viewAnalysis() {
     return `<button type="button" data-act="catSel" data-v="${esc(c)}" style="${st}">${sub ? `<span style="opacity:.6">${esc(p[0])} ›</span> ${esc(p.slice(1).join('>'))}` : esc(c)}</button>`;
   };
   const legendHtml = csel && !isSub && stackOrder.length ? `<div class="lg">${stackOrder.map(n => {
-    const key = pcat + '>' + n, ok = n !== '기타' && allCatKeys.has(key);
-    const sw = `<i style="background:${stackColor[n]}${n === '기타' ? ';opacity:.35' : ''}"></i>`, tx = `${sw}${esc(n)}`;
+    const key = pcat + '>' + n, ok = n !== '그 외' && allCatKeys.has(key);
+    const sw = `<i style="background:${stackColor[n]}${n === '그 외' ? ';opacity:.35' : ''}"></i>`, tx = `${sw}${esc(n)}`;
     return ok ? `<button type="button" data-act="catSel" data-v="${esc(key)}" style="font:inherit;font-size:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:left">${tx}</button>` : `<span>${tx}</span>`;
   }).join('')}</div>` : '';
-  if (csel) h += `<div class="card"><h2>대분류별 월별 지출 <small>칩을 누르면 분류가 바뀝니다 · 막대를 누르면 아래 월 상세가 바뀝니다</small></h2>
+  if (csel) h += `<div class="card"><h2>대분류별 월별 지출 <small>칩을 누르면 분류가 바뀝니다 · 막대를 누르면 아래 월 상세가 바뀝니다 · 차트에는 상위 5개 소분류만 보입니다</small></h2>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;align-items:center">${chipKeys.map(chipHtml).join('')}</div>
     ${subChips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;padding-left:10px;border-left:2px solid var(--line);align-items:center">${subChips.map(chipHtml).join('')}</div>` : ''}
     ${catBarChart(crows, cmLim, state.aMonth, isSub ? null : { order: stackOrder, color: stackColor }, isSub ? (subIdx[csel.split('>')[1]] != null ? PAL[subIdx[csel.split('>')[1]]] : 'var(--c6)') : null)}
@@ -492,7 +492,7 @@ function viewAnalysis() {
     ${(() => {   // 대분류별: 같은 폭·같은 눈금(가장 큰 대분류 기준). ▸ 버튼으로 소분류 펼치기(기본은 닫힘). 한도는 값 아래 작은 줄
       const limOf = k => (CL.find(e => e.unit === 'm' && e.key === k) || {}).amount || 0, open = state.mdOpen ??= {};
       const mx = Math.max(cats.length ? cats[0][1] : 1, ...CL.filter(e => e.unit === 'm' && cats.some(([c]) => e.key === c || e.key.startsWith(c + '>'))).map(e => e.amount));   // 눈금: 가장 큰 대분류와 한도 중 큰 값 (한도선이 막대 안에 들어오게)
-      const subsOfCat = c => { const m = {}; cur.items.forEach(t => { if (catOf(t) === c && subOf(t)) m[subOf(t)] = (m[subOf(t)] || 0) + t.amount; }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+      const subsOfCat = c => { const m = {}; cur.items.forEach(t => { if (catOf(t) === c) { const s = subOf(t) || '일반'; m[s] = (m[s] || 0) + t.amount; } }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
       const withSubs = cats.map(([c]) => c), allOpen = withSubs.length && withSubs.every(c => open[c]);   // 소분류가 없어도 모든 대분류에 ▸ 버튼
       const tg = c => `<button type="button" data-act="mdToggle" data-v="${esc(c)}" aria-label="${esc(c)} 소분류 ${open[c] ? '닫기' : '열기'}" style="font:inherit;font-size:10px;width:18px;height:18px;padding:0;margin-right:4px;border:1px solid var(--line);border-radius:4px;background:${open[c] ? 'var(--accent)' : 'var(--bg)'};color:${open[c] ? '#fff' : 'var(--sub)'};cursor:pointer;line-height:1">${open[c] ? '▾' : '▸'}</button>`;
       const bar = (lbl, v, lim, extra) => { const r = lim ? v / lim : 0, bc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--caution)' : '', tc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--warn)' : 'var(--sub)';   // 80% 초과 노랑, 100% 초과 빨강
@@ -925,7 +925,7 @@ const handlers = {
   }),
   mdToggle: el => { const o = state.mdOpen ??= {}; o[el.dataset.v] = !o[el.dataset.v]; viewAnalysis(); },
   mdAll: el => { const o = state.mdOpen ??= {}, cats = [...$('#mDetail').querySelectorAll('[data-act="mdToggle"]')].map(b => b.dataset.v), all = cats.every(c => o[c]); cats.forEach(c => o[c] = !all); viewAnalysis(); },
-  catSel: el => { const v = el.dataset.v; state.catSel = v.includes('>') && state.catSel === v ? v.split('>')[0] : v; viewAnalysis(); },   // 선택된 소분류 칩을 다시 누르면 해제(부모 대분류로)
+  catSel: el => { const v = el.dataset.v; state.catSel = v.includes('>') && state.catSel === v ? v.split('>')[0] : v; state.mdOpen = { [v.split('>')[0]]: true }; viewAnalysis(); },   // 선택된 소분류 칩을 다시 누르면 해제(부모 대분류로). 월 상세는 그 대분류의 소분류만 펼침(차트 막대와 같음), 화면 이동 없음
   addPayDay: () => run(async () => {
     const day = parseInt($('#pdDay').value, 10), from = $('#pdFrom').value, cur = payDaysOf();
     if (!PAY_DAYS_OK.includes(day)) throw new Error('하나카드 결제일 표에 있는 날짜만 고를 수 있어요');
