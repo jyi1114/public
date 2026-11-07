@@ -618,7 +618,9 @@ function viewSettings() {
     <button class="btn" data-act="saveSettings">설정 저장</button></div>
 
     <div class="card"><h2>대분류별 한도 <small>대분류 또는 '대분류 › 소분류' · 월/연 기준</small></h2>
-      ${cLims.length ? `<table>${cLims.map(e => `<tr><td>${esc(e.key.replace('>', ' › '))}</td><td>${won(e.amount)}</td><td>${e.unit === 'y' ? '연' : '월'}</td><td><button class="btn sec sm" data-act="delCatLimit" data-key="${esc(e.key)}">삭제</button></td></tr>`).join('')}</table>` : '<div class="note">설정된 한도가 없습니다.</div>'}
+      ${cLims.length ? `<table>${cLims.map(e => state.clEdit === e.key   // 수정 중인 줄: 금액·월/연을 바로 고침
+        ? `<tr><td style="text-align:left">${esc(e.key.replace('>', ' › '))}</td><td><input id="clEdAmt" inputmode="numeric" value="${e.amount.toLocaleString('ko-KR')}" style="width:110px;padding:4px 6px;font-size:13px"></td><td><select id="clEdUnit" style="width:auto;padding:4px;font-size:13px"><option value="m" ${e.unit === 'm' ? 'selected' : ''}>월</option><option value="y" ${e.unit === 'y' ? 'selected' : ''}>연</option></select></td><td style="white-space:nowrap"><button class="btn sm" data-act="saveCatLimit" data-key="${esc(e.key)}" style="margin:0 4px 0 0">저장</button><button class="btn sec sm" data-act="editCatLimit" data-key="" style="margin:0">취소</button></td></tr>`
+        : `<tr><td style="text-align:left">${esc(e.key.replace('>', ' › '))}</td><td>${won(e.amount)}</td><td>${e.unit === 'y' ? '연' : '월'}</td><td style="white-space:nowrap"><button class="btn sec sm" data-act="editCatLimit" data-key="${esc(e.key)}" style="margin:0 4px 0 0">수정</button><button class="btn sec sm" data-act="delCatLimit" data-key="${esc(e.key)}" style="margin:0">삭제</button></td></tr>`).join('')}</table>` : '<div class="note">설정된 한도가 없습니다.</div>'}
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"><select id="clKey" style="flex:1 1 140px;min-width:0">${clKeys.map(k => `<option value="${esc(k)}">${esc(k.replace('>', ' › '))}</option>`).join('')}</select>
         <input id="clAmt" inputmode="numeric" placeholder="금액(원)" autocomplete="off" style="flex:1 1 110px;min-width:0">
         <select id="clUnit" style="flex:0 0 72px;min-width:0"><option value="m">월</option><option value="y">연</option></select></div>
@@ -852,10 +854,11 @@ function viewAsset() {
 
 function render() {
   if (state.shown === 'analysis') { saveAScroll(); state.aPageY = window.scrollY; }   // 분석 탭을 떠나기(또는 다시 그리기) 직전의 위치 저장
+  const keepY = state.shown === 'settings' && state.tab === 'settings' ? window.scrollY : null;   // 설정 탭 안에서 다시 그릴 때(수정·추가·삭제)는 보던 위치 유지
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === state.tab));
   ({ input: viewInput, history: viewHistory, analysis: viewAnalysis, asset: viewAsset, settings: viewSettings })[state.tab]();
   state.shown = state.tab;
-  if (state.tab === 'analysis' && state.aPageY != null) { window.scrollTo(0, state.aPageY); state.aPageY = null; } else window.scrollTo(0, 0);
+  if (state.tab === 'analysis' && state.aPageY != null) { window.scrollTo(0, state.aPageY); state.aPageY = null; } else window.scrollTo(0, keepY ?? 0);
 }
 
 // ---------- actions ----------
@@ -899,6 +902,13 @@ const handlers = {
     const catLimits = [...catLimitsOf().filter(e => e.key !== key), { key, amount, unit }];
     const merged = { ...state.settings, catLimits };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('한도 저장됨'); render();
+  }),
+  editCatLimit: el => { state.clEdit = el.dataset.key || null; render(); },
+  saveCatLimit: el => run(async () => {
+    const key = el.dataset.key, amount = parseInt($('#clEdAmt').value.replace(/\D/g, ''), 10), unit = $('#clEdUnit').value === 'y' ? 'y' : 'm';
+    if (!(amount > 0)) throw new Error('금액을 확인하세요');
+    const catLimits = catLimitsOf().map(e => e.key === key ? { key, amount, unit } : e), merged = { ...state.settings, catLimits };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; state.clEdit = null; toast('한도 수정됨'); render();
   }),
   delCatLimit: el => run(async () => {
     const catLimits = catLimitsOf().filter(e => e.key !== el.dataset.key), merged = { ...state.settings, catLimits };
