@@ -895,17 +895,25 @@ const colMap = row => { const m = {}; row.forEach((h, i) => { const k = cellStr(
 
 function parseCardKB(aoa, hi, fname) {   // KB국민카드 이용내역 (이용하신곳 / 국내이용금액(원) / 해외이용금액($) 형식)
   const col = colMap(aoa[hi]), g = (r, k) => (k in col ? r[col[k]] : '');
-  const items = []; let cancelled = 0, cancelAmt = 0;
+  const items = [], cancels = []; let cancelled = 0, cancelAmt = 0;
   for (const r of aoa.slice(hi + 1)) {
     const date = cellDate(g(r, '이용일')); if (!date) continue;
-    if (cellStr(g(r, '상태')).includes('취소')) { cancelled++; cancelAmt += toNum(g(r, '국내이용금액(원)')); continue; }
+    if (cellStr(g(r, '상태')).includes('취소')) { const amount = Math.abs(Math.round(toNum(g(r, '국내이용금액(원)')))); if (amount > 0) cancels.push({ date, name: sp1(g(r, '이용하신곳')) || '카드', amount, approval: cellStr(g(r, '승인번호')) }); continue; }
     const krw = Math.round(toNum(g(r, '국내이용금액(원)')) - toNum(g(r, '할인금액'))), usd = toNum(g(r, '해외이용금액($)'));
     if (krw <= 0 && usd <= 0) continue;
     const name = sp1(g(r, '이용하신곳')) || '카드';
     let n = 1; const m = /(\d+)\s*개월/.exec(cellStr(g(r, '결제방법'))); if (m && +m[1] > 1) n = +m[1];
     items.push({ date, name, amount: krw > 0 ? krw : 0, usd: krw > 0 ? 0 : usd, n, check: /체크/.test(cellStr(g(r, '이용카드명'))), approval: cellStr(g(r, '승인번호')) });
   }
-  return { type: 'card', fname, items, cancelled, cancelAmt };
+  const openCancels = [];   // 같은 파일 안의 원거래와 상계 (승인번호 우선, 없으면 같은 사용처·금액). 못 찾은 취소는 이미 저장된 내역과 대조하도록 넘김
+  for (const cn of cancels) {
+    let it = cn.approval ? items.find(x => x.approval === cn.approval && x.amount > 0) : null;
+    if (!it) it = items.find(x => x.amount > 0 && x.name === cn.name && x.amount === cn.amount && x.date <= cn.date);
+    if (!it) { openCancels.push(cn); continue; }
+    cancelled++; cancelAmt += cn.amount;
+    if (cn.amount >= it.amount) items.splice(items.indexOf(it), 1); else it.amount -= cn.amount;
+  }
+  return { type: 'card', fname, items, cancelled, cancelAmt, openCancels };
 }
 function parseCard(aoa, hi, fname) {
   const col = colMap(aoa[hi]), g = (r, k) => (k in col ? r[col[k]] : '');
@@ -1144,6 +1152,17 @@ function buildCands() {
   cands.forEach(c => { c._unc0 = c.kind === 'expense' && !c.cls && !c._cardPay && !c._topup; });   // 목록을 (다시) 만들 때만 계산 → 분류를 고르는 동안 행 순서는 고정
   cands.sort((a, b) => a.tx_date < b.tx_date ? -1 : a.tx_date > b.tx_date ? 1 : 0);
   imp.cands = cands;
+  // 다른 파일에서 이미 저장된 원거래의 취소: 저장된 내역에서 찾아 삭제(또는 부분취소면 금액 수정) 계획
+  const cd = [], used = new Set(), off = imp.cancelOff ??= {};
+  for (const f of imp.files) for (const cn of (f.type === 'card' && f.openCancels) || []) {
+    let ms = cn.approval ? state.tx.filter(t => t.source === 'card' && t.pay === 'card' && (t.import_key || '').includes(`|ap${cn.approval}|`) && !used.has(t.id)) : [];
+    if (!ms.length && !cn.approval) { const t = state.tx.find(t => t.source === 'card' && t.pay === 'card' && t.place === cn.name && t.amount === cn.amount && t.tx_date <= cn.date && !used.has(t.id)); if (t) ms = [t]; }
+    if (!ms.length) continue;
+    const sum = ms.reduce((s, t) => s + t.amount, 0);
+    if (cn.amount >= sum) ms.forEach(t => { used.add(t.id); cd.push({ id: t.id, tx_date: t.tx_date, place: t.place, amount: t.amount, cancelDate: cn.date, on: !off[t.id] }); });
+    else if (ms.length === 1) { used.add(ms[0].id); cd.push({ id: ms[0].id, tx_date: ms[0].tx_date, place: ms[0].place, amount: ms[0].amount, newAmount: ms[0].amount - cn.amount, cancelDate: cn.date, on: !off[ms[0].id] }); }
+  }
+  imp.cancelDel = cd;
 }
 
 function renderImport() {
@@ -1156,6 +1175,7 @@ function renderImport() {
   const incOpts = sel => INCOME_CATS.map(x => `<option ${x === sel ? 'selected' : ''}>${x}</option>`).join('');
   const impCats = allCats();
   const subLists = impCats.map((cat, ci) => { const subs = [...new Set([...subsOf(cat), ...Object.keys(state.rules).filter(k => k.startsWith(cat + '>')).map(k => k.slice(cat.length + 1))])].filter(Boolean); return `<datalist id="subs-${ci}">${subs.map(s => `<option value="${esc(s)}">`).join('')}</datalist>`; }).join('');
+  const cdel = imp.cancelDel || [], nCan = cdel.filter(x => x.on).length;
   const needAmt = fresh.filter(x => x._needAmt).length, ons = imp.files.filter(f => f.type === 'onnuripay' || f.type === 'onnuricharge');
   const rowOf = x => { const i = c.indexOf(x); return `<tr><td><input type="checkbox" data-imp="chk" data-i="${i}" ${x._on ? 'checked' : ''} ${x._needAmt ? 'disabled' : ''} style="width:auto"></td>
     <td style="white-space:nowrap">${x.tx_date.slice(2).replace(/-/g, '.')}</td><td style="text-align:left">${x._unc0 && x.cls ? '<span style="color:var(--ok)">✓ </span>' : ''}${esc(x.place)}${x._cardPay ? ' <span class="tag na">카드대금</span>' : ''}${x._topup ? ' <span class="tag na">충전</span>' : ''}${x.cls === '수입>캐시백' ? ' <span class="tag na">캐시백 적립</span>' : x.cls === '이체>캐시백사용' ? ' <span class="tag na">캐시백 사용</span>' : ''}<div class="note" style="margin:0">${['card', 'prepaid', 'onnuri'].includes(x.pay) ? payLabel(x.pay) : (x.source === 'card' ? '체크카드' : '계좌')}${x.tag ? ' · ' + esc(x.tag) : ''}</div></td>
@@ -1176,12 +1196,13 @@ function renderImport() {
       <div class="row2" style="margin-top:10px">${cards.length ? `<div><label class="f">할부 처리</label><select data-imp="mode"><option value="split" ${imp.mode === 'split' ? 'selected' : ''}>월별로 나누기 (기존 방식)</option><option value="full" ${imp.mode === 'full' ? 'selected' : ''}>한 번에 전액</option></select></div>` : ''}
       ${banks.length ? `<div><label class="f">은행의 카드대금 출금</label><select data-imp="cardpay"><option value="0" ${imp.incCardPay ? '' : 'selected'}>제외 (카드 내역과 중복)</option><option value="1" ${imp.incCardPay ? 'selected' : ''}>포함</option></select></div>` : ''}</div>
       ${needAmt ? `<div class="note"><b>해외 결제 ${needAmt}건은 원화 청구 금액을 입력해야 가져올 수 있어요 (카드 명세서 참고).</b></div>` : ''}
+      ${cdel.length ? `<div class="banner warn" style="margin-top:8px"><b>취소된 결제 ${cdel.length}건</b> — 저장하면 기존 내역에서 ${cdel.some(x => x.newAmount) ? '지우거나 금액을 고쳐요' : '지워요'} (체크를 풀면 그대로 둠)${cdel.map((x, i) => `<label style="display:flex;gap:6px;align-items:center;font-size:13px;margin-top:4px"><input type="checkbox" data-imp="cdel" data-i="${i}" ${x.on ? 'checked' : ''} style="width:auto"><span>${x.tx_date.slice(5).replace('-', '.')} ${esc(x.place)} ${won(x.amount)}(${x.cancelDate.slice(5).replace('-', '.')} 취소${x.newAmount ? ` · 금액 수정 → ${won(x.newAmount)}` : ''})</span></label>`).join('')}</div>` : ''}
       ${newRules.length ? `<div class="note">추가될 규칙: ${newRules.map(r => `${esc(r.key)} → ${esc(r.nature)}`).join(', ')}</div>` : ''}
       <div class="note">체크를 풀면 가져오지 않습니다. 분류는 파일에 적힌 값을 쓰고, 비어 있으면 같은 사용처를 전에 분류한 대로 채웠어요. 처음 보는 곳은 '미분류'예요.${nUnc ? ` <b>미분류 ${nUnc}건</b>` : ''}</div>
       <div style="overflow-x:auto;margin-top:8px"><table><tr><th></th><th>날짜</th><th style="text-align:left">사용처</th><th>금액</th><th>분류</th></tr>${rows || '<tr><td colspan="5" class="note">새로 가져올 내역이 없습니다.</td></tr>'}</table></div>
       <div class="note" style="margin-top:8px">선택 ${on.length}건 · 지출 ${won(sumOut)} · 수입 ${won(sumIn)}</div>
       ` : ''}
-    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset || nPayRec || lastBal) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : (!on.length && (nPayRec || lastBal) ? '카드 결제·통장 잔액 기록 저장' : `${on.length}건 가져오기`)}</button>` : ''}
+    ${(imp.files.length || imp.asset) ? `<button class="btn" data-act="impGo" ${(on.length || imp.asset || nPayRec || lastBal || nCan) ? '' : 'disabled style="opacity:.5"'}>${imp.asset ? (on.length ? `자산 저장 + ${on.length}건 가져오기` : '자산 데이터 저장') : (!on.length && (nPayRec || lastBal) ? '카드 결제·통장 잔액 기록 저장' : !on.length && nCan ? '취소 반영' : `${on.length}건 가져오기`)}</button>` : ''}
     <button class="btn sec" data-act="closeModal">닫기</button>`;
   $('#impFile').onchange = e => e.target.files.length && loadImportFiles([...e.target.files]);
 }
@@ -1231,8 +1252,14 @@ handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay
 handlers.impGo = () => run(async () => {
   const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, _unc0, _onnuriFace, ...r }) => r);
   const bankFiles = state.imp.files.filter(f => f.type === 'bank'), recs = payRecordsFromBank(bankFiles), nRec = Object.keys(recs).length, dBals = bankDailyBals(bankFiles);
-  if (!rows.length && !state.imp.asset && !nRec && !dBals.length) return;
+  const cdo = (state.imp.cancelDel || []).filter(x => x.on);
+  if (!rows.length && !state.imp.asset && !nRec && !dBals.length && !cdo.length) return;
   const parts = [];
+  if (cdo.length) {   // 취소된 결제: 기존 내역 삭제 (부분취소는 금액 수정)
+    for (const x of cdo) { if (x.newAmount) await backend.updateTx(x.id, { amount: x.newAmount }); else await backend.deleteTx(x.id); }
+    const all = await backend.loadAll(); state.tx = all.tx; state.asset = all.asset || state.asset; state.assetErr = all.assetErr || ''; prep();
+    parts.push(`취소 반영 ${cdo.length}건`);
+  }
   if (nRec || dBals.length) {   // 확정 기록 + 은행 잔액(날짜별 마지막 거래 후 잔액)을 설정에 저장
     const nd = new Set(dBals.map(b => b.date)), bankAuto = [...(state.settings.bankAuto || []).filter(b => !nd.has(b.date)), ...dBals].sort((a, b) => a.date < b.date ? -1 : 1).slice(-400);
     const merged = { ...state.settings, payRecords: { ...(state.settings.payRecords || {}), ...recs }, bankAuto };
@@ -1267,6 +1294,7 @@ document.addEventListener('change', e => {
     x.cls = catOf(x) + (sub ? '>' + sub : '');
     ed(x).cls = x.cls; delete ed(x).prop; impPropagate(x); renderImportKeepScroll();
   }
+  else if (k === 'cdel') { const x = state.imp.cancelDel[i]; if (x) { x.on = el.checked; (state.imp.cancelOff ??= {})[x.id] = !el.checked; renderImportKeepScroll(); } }
   else if (k === 'mode') { state.imp.mode = el.value; buildCands(); renderImport(); }
   else if (k === 'amt') { const v = parseInt(el.value.replace(/\D/g, ''), 10) || 0; if (v > 0) { c[i].amount = v; c[i]._needAmt = false; c[i]._on = true; ed(c[i]).amount = v; ed(c[i]).on = true; renderImportKeepScroll(); } }
   else if (k === 'fpay') { state.imp.files[+el.dataset.f].payAs = el.value; buildCands(); renderImport(); }
