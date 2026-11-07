@@ -497,10 +497,10 @@ function viewAnalysis() {
       const tg = c => `<button type="button" data-act="mdToggle" data-v="${esc(c)}" aria-label="${esc(c)} 소분류 ${open[c] ? '닫기' : '열기'}" style="font:inherit;font-size:10px;width:18px;height:18px;padding:0;margin-right:4px;border:1px solid var(--line);border-radius:4px;background:${open[c] ? 'var(--accent)' : 'var(--bg)'};color:${open[c] ? '#fff' : 'var(--sub)'};cursor:pointer;line-height:1">${open[c] ? '▾' : '▸'}</button>`;
       const bar = (lbl, v, lim, extra) => { const r = lim ? v / lim : 0, bc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--caution)' : '', tc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--warn)' : 'var(--sub)';   // 80% 초과 노랑, 100% 초과 빨강
         const ln = lim ? `<i style="position:absolute;top:-2px;bottom:-2px;left:calc(${Math.min(100, lim / mx * 100).toFixed(1)}% - 1px);border-left:2px dashed #000"></i>` : '';   // 한도선(점선) — 막대 색과 겹치지 않게 항상 검은색
-        const arrow = extra.cat && lim ? '<span style="color:var(--sub)"> ›</span>' : '';   // 한도 줄은 › 를 첫 줄에 붙여 두 줄 이내로 (go 클래스의 ::after는 셋째 줄로 밀림)
-        return `<div class="hbar${extra.cat && !lim ? ' go' : ''}"${extra.cat ? ` data-cat="${esc(extra.cat)}" style="cursor:pointer"` : ''}><span class="lbl" style="${extra.sub ? 'padding-left:14px;font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis' : 'display:flex;align-items:center;white-space:nowrap'}">${lbl}</span><span class="track" style="position:relative;overflow:visible"><span style="width:${(v / mx * 100).toFixed(1)}%;border-radius:4px${bc ? ';background:' + bc : extra.sub ? ';opacity:.6' : ''}"></span>${ln}</span><span class="val"><span style="white-space:nowrap">${won(v)} · ${pct(v / cur.total)}${arrow}</span>${lim ? `<div style="font-size:11px;color:${tc};white-space:nowrap">한도 ${won(lim)}</div>` : ''}</span></div>`; };
+        const arrow = (extra.cat && lim) || extra.key ? '<span style="color:var(--sub)"> ›</span>' : '';   // 한도 줄은 › 를 첫 줄에 붙여 두 줄 이내로 (go 클래스의 ::after는 셋째 줄로 밀림)
+        return `<div class="hbar${extra.cat && !lim ? ' go' : ''}"${extra.cat ? ` data-cat="${esc(extra.cat)}" style="cursor:pointer"` : extra.key ? ` data-sub="${esc(extra.key)}" style="cursor:pointer"` : ''}><span class="lbl" style="${extra.sub ? 'padding-left:14px;font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis' : 'display:flex;align-items:center;white-space:nowrap'}">${lbl}</span><span class="track" style="position:relative;overflow:visible"><span style="width:${(v / mx * 100).toFixed(1)}%;border-radius:4px${bc ? ';background:' + bc : extra.sub ? ';opacity:.6' : ''}"></span>${ln}</span><span class="val"><span style="white-space:nowrap">${won(v)} · ${pct(v / cur.total)}${arrow}</span>${lim ? `<div style="font-size:11px;color:${tc};white-space:nowrap">한도 ${won(lim)}</div>` : ''}</span></div>`; };
       const head = `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px"><span class="note" style="margin:0">대분류별</span>${withSubs.length ? `<button type="button" data-act="mdAll" style="font:inherit;font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--sub);cursor:pointer">${allOpen ? '모두 닫기' : '모두 열기'}</button>` : ''}</div>`;
-      return head + cats.map(([c, v]) => { const ss = subsOfCat(c); return bar(tg(c) + esc(c), v, limOf(c), { cat: c }) + (open[c] ? (ss.length ? ss.map(([s, u]) => bar('└ ' + esc(s), u, limOf(c + '>' + s), { sub: true })).join('') : '<div style="height:20px;margin:5px 0"></div>') : ''); }).join('');   // 소분류가 없으면 펼쳤을 때 빈 줄
+      return head + cats.map(([c, v]) => { const ss = subsOfCat(c); return bar(tg(c) + esc(c), v, limOf(c), { cat: c }) + (open[c] ? (ss.length ? ss.map(([s, u]) => bar('└ ' + esc(s), u, limOf(c + '>' + s), { sub: true, key: c + '>' + s })).join('') : '<div style="height:20px;margin:5px 0"></div>') : ''); }).join('');   // 소분류가 없으면 펼쳤을 때 빈 줄
     })()}
     <div class="two" style="margin-top:14px"><div><div class="note" style="margin:0 0 6px">큰 지출 TOP 8</div><table>${top.map(t => `<tr><td style="text-align:left">${mmdd(t.tx_date)} ${esc(t.place || t.memo)}</td><td>${won(t.amount)}</td></tr>`).join('')}</table></div>
       <div><div class="note" style="margin:0 0 6px">비정기 ${irreg.length}건 · ${won(cur['비정기'])}</div>
@@ -594,15 +594,20 @@ function viewAnalysis() {
     state.aMonth = el.dataset.month; viewAnalysis();
     const d = $('#mDetail'); if (d) d.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
-  cw.onclick = pick; tw.onclick = pick;
+  const pickClosed = e => { const el = e.target.closest('[data-month]'); if (el && B[el.dataset.month]) state.mdOpen = {}; pick(e); };   // 월별 수입지출 그래프·표: 월 상세의 소분류는 모두 닫힌 채로
+  cw.onclick = pickClosed; tw.onclick = pickClosed;
   const cc = $('#catChartWrap');
-  if (cc) { cc.onclick = pick; const g = cc.querySelector(`g[data-month="${state.aMonth}"]`); let right = 8 + (keys.indexOf(state.aMonth) + 1) * 76; try { if (g) { const b = g.getBBox(); right = b.x + b.width; } } catch (_) {} cc.scrollLeft = Math.max(0, right - cc.clientWidth); }
+  // 대분류별 차트 막대를 누르면 월 상세에서 그 대분류의 소분류만 펼침
+  if (cc) { cc.onclick = e => { const el = e.target.closest('[data-month]'); if (el && B[el.dataset.month] && pcat) state.mdOpen = { [pcat]: true }; pick(e); }; const g = cc.querySelector(`g[data-month="${state.aMonth}"]`); let right = 8 + (keys.indexOf(state.aMonth) + 1) * 76; try { if (g) { const b = g.getBBox(); right = b.x + b.width; } } catch (_) {} cc.scrollLeft = Math.max(0, right - cc.clientWidth); }
   view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: ['수입>' + el.dataset.inc], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   view().querySelectorAll('[data-cat]').forEach(el => el.onclick = e => {
     if (e.target.closest('[data-act]')) return;   // ▸ 펼치기 버튼은 내역으로 이동하지 않음
     state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
+  });
+  view().querySelectorAll('[data-sub]').forEach(el => el.onclick = () => {   // 소분류 줄 → 그 달 그 소분류 내역 (대분류 필터 + 분류 검색)
+    const k = el.dataset.sub; state.hFilter = { month: state.aMonth, cats: [k.split('>')[0]], kind: 'expense' }; state.hQuery = k; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; state.aAlign = 'month'; viewAnalysis(); };
   $('#pSel').onchange = e => { state.pSel = e.target.value; viewAnalysis(); };
