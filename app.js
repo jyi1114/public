@@ -602,11 +602,14 @@ function viewAnalysis() {
   view().querySelectorAll('[data-inc]').forEach(el => el.onclick = () => {
     state.hFilter = { month: state.aMonth, cats: ['수입>' + el.dataset.inc], kind: 'income' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
+  // 월 상세 대분류별: 이름·막대 부분을 누르면 소분류 펼치기/닫기, 오른쪽 금액을 누르면 그 분류 내역으로
   view().querySelectorAll('[data-cat]').forEach(el => el.onclick = e => {
-    if (e.target.closest('[data-act]')) return;   // ▸ 펼치기 버튼은 내역으로 이동하지 않음
+    if (e.target.closest('[data-act]')) return;   // ▸ 버튼은 자체 처리
+    if (!e.target.closest('.val')) { const o = state.mdOpen ??= {}; o[el.dataset.cat] = !o[el.dataset.cat]; viewAnalysis(); return; }
     state.hFilter = { month: state.aMonth, cats: [el.dataset.cat], kind: 'expense' }; state.hQuery = ''; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
-  view().querySelectorAll('[data-sub]').forEach(el => el.onclick = () => {   // 소분류 줄 → 그 달 그 소분류 내역 (대분류 필터 + 분류 검색)
+  view().querySelectorAll('[data-sub]').forEach(el => el.onclick = e => {   // 소분류 줄: 오른쪽 금액을 누르면 그 달 그 소분류 내역 (대분류 필터 + 분류 검색)
+    if (!e.target.closest('.val')) return;
     const k = el.dataset.sub; state.hFilter = { month: state.aMonth, cats: [k.split('>')[0]], kind: 'expense' }; state.hQuery = k; state.hSort = 'new'; state.hLimit = 200; state.tab = 'history'; render();
   });
   $('#aMonth').onchange = e => { state.aMonth = e.target.value; state.aAlign = 'month'; viewAnalysis(); };
