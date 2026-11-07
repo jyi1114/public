@@ -303,7 +303,7 @@ function barChart(items, limit, selected) {   // items[i].k = 'YYYY-MM'. 달마�
     g += `<text x="${sx + SLOT / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text></g>`;
   });
   const ly = y(limit);
-  g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="var(--bad)" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`;
+  g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="#000" stroke-width="1.5" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`;
   return `<div id="mChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div><div class="lg"><span><i style="background:var(--inc)"></i>수입</span><span><i style="background:var(--c1)"></i>고정비</span><span><i style="background:var(--c2)"></i>변동비</span><span><i style="background:var(--c4)"></i>비정기</span></div>`;
 }
 
@@ -330,7 +330,7 @@ function catBarChart(items, limit, selected, stack, single) {   // items[i] = { 
     }
     g += `<text x="${sx + SLOT / 2}" y="${H - 8}" text-anchor="middle">${esc(it.label)}</text></g>`;
   });
-  if (limit > 0) { const ly = y(limit); g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="var(--bad)" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`; }
+  if (limit > 0) { const ly = y(limit); g += `<line x1="${pl}" x2="${W - pr}" y1="${ly}" y2="${ly}" stroke="#000" stroke-width="1.5" stroke-dasharray="4 3" pointer-events="none"/><text x="${W - pr}" y="${ly - 4}" text-anchor="end" style="fill:var(--bad)" pointer-events="none">한도 ${(limit / 10000).toFixed(0)}만</text>`; }
   return `<div id="catChartWrap" style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" style="display:block">${g}</svg></div>`;
 }
 
@@ -496,7 +496,7 @@ function viewAnalysis() {
       const withSubs = cats.map(([c]) => c), allOpen = withSubs.length && withSubs.every(c => open[c]);   // 소분류가 없어도 모든 대분류에 ▸ 버튼
       const tg = c => `<button type="button" data-act="mdToggle" data-v="${esc(c)}" aria-label="${esc(c)} 소분류 ${open[c] ? '닫기' : '열기'}" style="font:inherit;font-size:10px;width:18px;height:18px;padding:0;margin-right:4px;border:1px solid var(--line);border-radius:4px;background:${open[c] ? 'var(--accent)' : 'var(--bg)'};color:${open[c] ? '#fff' : 'var(--sub)'};cursor:pointer;line-height:1">${open[c] ? '▾' : '▸'}</button>`;
       const bar = (lbl, v, lim, extra) => { const r = lim ? v / lim : 0, bc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--caution)' : '', tc = r > 1 ? 'var(--bad)' : r > 0.8 ? 'var(--warn)' : 'var(--sub)';   // 80% 초과 노랑, 100% 초과 빨강
-        const ln = lim ? `<i style="position:absolute;top:-2px;bottom:-2px;left:calc(${Math.min(100, lim / mx * 100).toFixed(1)}% - 1px);border-left:2px dashed ${r > 1 ? 'var(--bad)' : 'var(--text)'};opacity:.7"></i>` : '';   // 한도선(점선)
+        const ln = lim ? `<i style="position:absolute;top:-2px;bottom:-2px;left:calc(${Math.min(100, lim / mx * 100).toFixed(1)}% - 1px);border-left:2px dashed #000"></i>` : '';   // 한도선(점선) — 막대 색과 겹치지 않게 항상 검은색
         const arrow = extra.cat && lim ? '<span style="color:var(--sub)"> ›</span>' : '';   // 한도 줄은 › 를 첫 줄에 붙여 두 줄 이내로 (go 클래스의 ::after는 셋째 줄로 밀림)
         return `<div class="hbar${extra.cat && !lim ? ' go' : ''}"${extra.cat ? ` data-cat="${esc(extra.cat)}" style="cursor:pointer"` : ''}><span class="lbl" style="${extra.sub ? 'padding-left:14px;font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis' : 'display:flex;align-items:center;white-space:nowrap'}">${lbl}</span><span class="track" style="position:relative;overflow:visible"><span style="width:${(v / mx * 100).toFixed(1)}%;border-radius:4px${bc ? ';background:' + bc : extra.sub ? ';opacity:.6' : ''}"></span>${ln}</span><span class="val"><span style="white-space:nowrap">${won(v)} · ${pct(v / cur.total)}${arrow}</span>${lim ? `<div style="font-size:11px;color:${tc};white-space:nowrap">한도 ${won(lim)}</div>` : ''}</span></div>`; };
       const head = `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 6px"><span class="note" style="margin:0">대분류별</span>${withSubs.length ? `<button type="button" data-act="mdAll" style="font:inherit;font-size:11px;padding:2px 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--sub);cursor:pointer">${allOpen ? '모두 닫기' : '모두 열기'}</button>` : ''}</div>`;
