@@ -1231,9 +1231,15 @@ function buildCands() {
   }
   const keys = new Set(state.tx.map(t => t.import_key).filter(Boolean)), multi = {};
   state.tx.forEach(t => { if (t.import_key && /^(cd|bn|nv|pp|cb|lw|lc|op|oc|od)\|/.test(t.import_key)) return; const k = `${t.tx_date}|${t.amount}|${t.kind}`; multi[k] = (multi[k] || 0) + 1; });
+  const cardBase = {}, isCd = c => (c.import_key || '').startsWith('cd|'), baseOf = c => c.import_key.split('|').slice(0, 4).join('|');
+  state.tx.forEach(t => { if (isCd(t)) { const b = baseOf(t); cardBase[b] = (cardBase[b] || 0) + 1; } });
   cands.forEach(c => {
-    if (keys.has(c.import_key)) { c._dup = true; c._kdup = true; return; }
-    const k = `${c.tx_date}|${c.amount}|${c.kind}`; if (!c._needAmt && multi[k] > 0) { multi[k]--; c._dup = true; }
+    if (keys.has(c.import_key)) { c._dup = true; c._kdup = true; if (isCd(c) && cardBase[baseOf(c)] > 0) cardBase[baseOf(c)]--; }
+  });
+  cands.forEach(c => {
+    if (c._kdup) return;
+    if (isCd(c) && cardBase[baseOf(c)] > 0) { cardBase[baseOf(c)]--; c._dup = true; }   // 같은 카드 결제가 승인번호 있는/없는 파일로 각각 올라오면 키가 달라짐 → 날짜·금액·가게가 같은 기존 카드 행과 개수만큼 짝지음
+    else { const k = `${c.tx_date}|${c.amount}|${c.kind}`; if (!c._needAmt && multi[k] > 0) { multi[k]--; c._dup = true; } }
     c._on = !c._dup && !c._needAmt && !(c._cardPay && !imp.incCardPay);
   });
   // 출처가 달라도 같은 지역화폐 결제·충전이면 한 번만 (대전사랑 앱 파일 > 카드 명세서 > 은행 순서로 남김)
@@ -1256,6 +1262,20 @@ function buildCands() {
       if (ex[grp][k] > 0) { ex[grp][k]--; c._dup = true; c._on = false; return; }
       if (bat[grp][k] && bat[grp][k] !== c.source) { c._dup = true; c._on = false; return; }   // 다른 출처에서 이미 채택된 같은 날짜·금액 (같은 출처끼리의 동일 금액 반복 결제는 유지)
       bat[grp][k] = c.source;
+    });
+  }
+  // 체크카드 결제(카드 명세서, pay 'cash')와 은행 출금이 같은 날짜·금액·가게면 한 번만 (카드 명세서 쪽을 남김)
+  {
+    const nm = s => (s || '').replace(/\(주\)|㈜|주식회사|\s/g, '');
+    const isChk = o => o.kind === 'expense' && o.source === 'card' && o.pay === 'cash';
+    const isBank = o => o.kind === 'expense' && o.source === 'bank' && !(o.cls || '').startsWith('이체') && (o.cls || '') !== '카드대금' && !o._cardPay && !o._topup;
+    const same = (a, b) => { const x = nm(a.place), y = nm(b.place); return a.tx_date === b.tx_date && a.amount === b.amount && x && y && (x.includes(y) || y.includes(x)); };
+    const exChk = state.tx.filter(isChk), exBank = state.tx.filter(isBank), used = new Set(), keptChk = [];
+    const grab = (pool, c) => { const o = pool.find(p => !used.has(p) && same(p, c)); if (o) used.add(o); return !!o; };
+    [...cands].sort((a, b) => (isChk(a) ? 0 : 1) - (isChk(b) ? 0 : 1)).forEach(c => {
+      if (c._dup) return;
+      if (isChk(c)) { if (grab(exBank, c)) { c._dup = true; c._on = false; } else keptChk.push(c); return; }
+      if (isBank(c) && (grab(exChk, c) || grab(keptChk, c))) { c._dup = true; c._on = false; }
     });
   }
   // 온누리 할인: 은행 '이체>온누리결제'(낸 돈) ↔ '이체>온누리충전'(액면가)을 같은 날짜끼리 짝지어 차액을 '수입>상품권할인'으로.
