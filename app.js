@@ -22,7 +22,8 @@ const loadScript = src => new Promise((res, rej) => { const s = document.createE
 const statusCls = t => /⚠|초과|부족|위험/.test(t || '') ? 'warn' : /정상|양호/.test(t || '') ? 'ok' : 'na';
 const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</span>` : '';
 
-const DELIVERY_PAT = /우아한형제들|배달의민족|배민|땡겨요|요기요|쿠팡이츠|위대한상상/;   // 배달 앱 사용처 → 가져올 때 '식비>배달'로 자동 분류
+const BIG_SPEND = 200000;   // 이 금액 이상 결제는 '이 속도면' 예상에서 늘리지 않음
+const DELIVERY_PAT =/우아한형제들|배달의민족|배민|땡겨요|요기요|쿠팡이츠|위대한상상/;   // 배달 앱 사용처 → 가져올 때 '식비>배달'로 자동 분류
 const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, payDays: [{ from: '2026-07', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
 const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동',
   '경조사': '비정기', '교육/육아': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
@@ -377,9 +378,10 @@ function viewAnalysis() {
   const pc = opts.find(p => p.ym === state.pSel) || opts[di], ci = pl.indexOf(pc), prev = pl[ci - 1], isDef = ci === di, past = pc.pay <= today && !isDef, upc = !past;
   const dday = Math.max(0, Math.ceil(dnum(pc.pay) - dnum(today))), mdOf = iso => `${+iso.slice(5, 7)}.${+iso.slice(8, 10)}`, dd = x => x.replace(/-/g, '.');
   const cashCalc = p => {   // 결제 p의 청구 예정액·통장 잔액 계산
-    const pv = pl[pl.indexOf(p) - 1], bill0 = spend.filter(t => t.pay === 'card' && t.tx_date >= p.start && t.tx_date <= p.end).reduce((s, t) => s + t.amount, 0);
+    const pv = pl[pl.indexOf(p) - 1], its = spend.filter(t => t.pay === 'card' && t.tx_date >= p.start && t.tx_date <= p.end), bill0 = its.reduce((s, t) => s + t.amount, 0);
     const inProg = today < p.end, ptotal = dnum(p.end) - dnum(p.start) + 1, el = Math.min(Math.max(dnum(today), dnum(p.start)), dnum(p.end)) - dnum(p.start) + 1;
-    const est = inProg && el >= 5 ? bill0 / el * ptotal : null;
+    const isFix = t => t.tx_date > today || /할부/.test((t.place || '') + (t.tag || '')) || t.amount >= BIG_SPEND, fix = its.filter(isFix).reduce((s, t) => s + t.amount, 0), reg = bill0 - fix;   // 할부·미래 날짜·큰 지출은 늘리지 않음
+    const est = inProg && el >= 5 ? fix + reg / el * ptotal : null;
     let bal = null;   // 통장 잔액: 이 결제 기간(앞 결제일 ≤ 날짜 < 이번 결제일) 안의 기록 중 최신 (결제일 당일 기록은 다음 결제 몫)
     const inWin = d => (!pv || d >= pv.pay) && d < p.pay;
     const latest = l => [...(l || [])].filter(s => inWin(s.date) && !isNaN(Number(s.balance))).sort((a, b) => a.date < b.date ? -1 : 1).pop();
@@ -387,9 +389,9 @@ function viewAnalysis() {
     if (bs) bal = { date: bs.date, v: Number(bs.balance), src: `통장 잔액 기록 ${dd(bs.date)}`, manual: true };
     else if (ba) bal = { date: ba.date, v: Number(ba.balance), src: `은행 거래내역 ${dd(ba.date)}` };
     if (!bs && state.asset) { const M = aMonths(), L = M[M.length - 1]; if (L && L.date != null) { const ad = aToDate(L.date).toISOString().slice(0, 10); if (inWin(ad) && (!bal || ad > bal.date)) bal = { date: ad, v: (L.debt < 0 ? L.debt : (L.cash || 0)), src: `자산 시트 ${dd(ad)} 기준` }; } }
-    return { bill0, inProg, ptotal, el, est, bill: est != null ? est : bill0, bal, hasAuto: !!ba };
+    return { bill0, inProg, ptotal, el, est, fix, reg, bill: bill0, bal, hasAuto: !!ba };   // 청구 예정액 = 지금까지 카드 사용액 (이 속도면 예상은 참고 문구로만)
   };
-  const { bill0, inProg, ptotal, el, est, bill, bal, hasAuto } = cashCalc(pc), lbl = inProg ? ' (예상)' : '';
+  const { bill0, inProg, ptotal, el, est, fix, reg, bill, bal, hasAuto } = cashCalc(pc), lbl = inProg ? ' (현재까지)' : '';
   const has21 = upc && pc.pay.slice(8, 10) === '21', [ty, tm] = today.split('-').map(Number);
   const mid21 = upc && !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pc.pay; });
   let cashRows = `<table><tr><td>청구 예정액${lbl}</td><td><b>${won(bill)}</b></td></tr></table><div class="note">이 결제 기간의 통장 잔액을 기록하면 판정이 나와요.</div>`;
@@ -426,7 +428,7 @@ function viewAnalysis() {
     return head + `<td>${won(c.bill)}</td>` + (aft != null ? `<td>${won(aft)} <span class="note">예상</span></td><td>${vTag(aft)}</td></tr>` : `<td>-</td><td><span class="note">잔액 기록 필요</span></td></tr>`);
   }).join('')}</table><div class="note">(예측) 줄은 카드 사용액과 기록한 통장 잔액으로 계산한 인출 후 예상 잔액이에요. 결제일+2일까지 들어간 은행 거래내역을 올리면 확정 기록(하나카드·KB카드출금 합계, 결제일+2일 마지막 거래 후 잔액)으로 바뀌고 (예측)이 떨어져요.</div>`;
   h += `<div class="card"><h2>현금 점검 <small><select id="pSel" style="width:auto;font-size:13px;padding:4px 8px">${[...opts].reverse().map(p => `<option value="${p.ym}" ${p === pc ? 'selected' : ''}>${mdOf(p.pay)} 결제${isConf(p) ? '' : ' (예측)'}</option>`).join('')}</select> · ${pc.pay >= today ? 'D-' + dday : '결제 완료'} · 사용분 ${dd(pc.start)} ~ ${dd(pc.end)}</small></h2>
-    ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과)</div>` : ''}
+    ${est != null ? `<div class="note" style="margin:0 0 8px">지금까지 ${won(bill0)} · 이 속도면 약 ${won(est)} (${el}/${ptotal}일 경과) <span class="tip" tabindex="0" role="button" aria-label="예상 계산 설명">ⓘ<span class="tipbox">참고용 예상이에요. 할부·아직 오지 않은 날짜의 결제·${won(BIG_SPEND)} 이상 큰 지출(${won(fix)})은 그대로 더하고, 나머지 일반 사용(${won(reg)})만 지난 ${el}일 속도로 ${ptotal}일치로 늘려 계산해요. 청구 예정액은 지금까지 실제 카드 사용액이에요.</span></span></div>` : ''}
     ${cashRows}
     ${has21 ? '<div class="note">결제일에 급여도 들어와요 (판정은 급여 전 잔액 기준)</div>' : mid21 ? '<div class="note">그 사이 21일 급여·자동이체로 실제 잔액은 달라질 수 있어요</div>' : ''}
     ${pastHtml}
