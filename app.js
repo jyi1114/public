@@ -24,12 +24,22 @@ const tag = (t, c) => t ? `<span class="tag ${c || statusCls(t)}">${esc(t)}</spa
 
 const DELIVERY_PAT = /우아한형제들|배달의민족|배민|땡겨요|요기요|쿠팡이츠|위대한상상/;   // 배달 앱 사용처 → 가져올 때 '식비>배달'로 자동 분류
 const DEFAULT_SETTINGS = { monthLimit: 2350000, cardLimit: 1910000, payDays: [{ from: '2026-07', day: 21 }, { from: '2027-01', day: 13 }], overdraftLimit: 2500000 };
-const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동', '술/유흥': '변동',
-  '경조사': '비정기', '여행/숙박': '비정기', '교육': '변동', '자녀': '변동', '반려동물': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
-  '미분류': '변동', '기타': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
-const CAT_ALIAS = { '의류/미용': '의복/미용', '경조사/회비': '경조사' };
+const DEFAULT_RULES = { '식비': '변동', '교통/차량': '변동', '주거/통신': '고정', '생활용품': '변동', '건강/문화': '변동',
+  '경조사': '비정기', '교육/육아': '변동', '세금/이자': '비정기', '카드대금': '제외', '저축/보험': '제외', '이체': '제외',
+  '미분류': '변동', '용돈/기타': '변동', '의복/미용': '변동' };
+const CAT_ALIAS = { '의류/미용': '의복/미용', '경조사/회비': '경조사', '이체/대체': '이체' };
+const CAT_TREE = { '식비': ['주식', '부식', '간식', '외식', '커피/음료', '술/유흥', '배달'], '주거/통신': ['관리비', '공과금', '이동통신', '인터넷', '월세'], '생활용품': ['가구/가전', '주방/욕실', '잡화소모'], '의복/미용': ['의류비', '패션잡화', '헤어/뷰티', '세탁수선비', '렌즈삽입술'], '건강/문화': ['운동/레저', '문화생활', '여행', '병원비', '보장성보험', 'PT'], '교육/육아': ['등록금', '학원/교재비', '육아용품'], '교통/차량': ['대중교통비', '주유비', '자동차보험', '세차'], '경조사': ['경조사비', '모임회비', '데이트', '선물'], '세금/이자': ['세금', '대출이자', '할부이자'], '용돈/기타': ['용돈'], '저축/보험': ['예금', '적금', '펀드', '보험', '투자', '보장성보험', '자동차보험'], '이체': ['대출통장', '적금통장', '예금통장', '지갑속현금', '선불충전', '온누리결제', '온누리충전', '캐시백사용'], '카드대금': [] };   // 지출 분류 기본 목록(네이버가계부 기준). 설정 탭 '분류 관리'에서 소분류를 고치면 settings.catTree에 저장
+const defSub = cat => cat === '용돈/기타' ? '기타' : '일반';   // 소분류를 비웠을 때 들어가는 이름
+const withSub = cls => !cls || cls.includes('>') || cls === '카드대금' || cls === '미분류' ? cls : cls + '>' + defSub(cls);   // 지출 분류에 소분류가 없으면 '일반'(용돈/기타는 '기타')을 붙임
+const catTreeOf = () => state.settings.catTree && typeof state.settings.catTree === 'object' ? state.settings.catTree : CAT_TREE;
+const catKeys = () => [...new Set([...Object.keys(CAT_TREE), ...Object.keys(catTreeOf())])];
+const rememberSub = async row => {   // 직접 입력한 새 소분류를 설정의 분류 목록(catTree)에 추가
+  const cls = row.kind === 'expense' ? row.cls || '' : '', i = cls.indexOf('>'); if (i < 0) return;
+  const c = cls.slice(0, i), s = cls.slice(i + 1).split('>')[0], list = catTreeOf()[c] || []; if (!s || s === defSub(c) || list.includes(s)) return;
+  const merged = { ...state.settings, catTree: { ...catTreeOf(), [c]: [...list, s] } }; await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged };
+};   // 대분류 순서는 항상 CAT_TREE 순서 (저장소 jsonb는 키 순서를 바꿈)
 const normCls = cls => { if (!cls) return ''; const s = String(cls).replace(/\s*>\s*/g, '>').trim(), i = s.indexOf('>'), head = i < 0 ? s : s.slice(0, i); return head in CAT_ALIAS ? CAT_ALIAS[head] + (i < 0 ? '' : s.slice(i)) : s; };
-const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', '캐시백', '상품권할인', '기타수입'];
+const INCOME_CATS =['급여', '상여', '부수입', '이자/배당', '환급', '캐시백', '상품권할인', '사업소득', '예금', '적금', '펀드', '보험', '투자', '기타수입'];
 const payLabel = p => p === 'card' ? '카드' : p === 'prepaid' ? '대전사랑' : p === 'onnuri' ? '온누리' : '현금·계좌';
 const NATURES = ['고정', '변동', '비정기', '제외'];
 
@@ -115,8 +125,9 @@ function prep() { state.rulesN = Object.fromEntries(Object.entries(state.rules).
 const isSpend = t => t.kind === 'expense' && t._n !== '제외';
 const monthsOf = () => [...new Set(state.tx.map(t => t._m))].sort().reverse();
 
-function allCats() { return [...new Set([...Object.keys(state.rules).filter(k => !k.includes('>')).map(normCls),...state.tx.filter(t => t.kind === 'expense').map(catOf)])].filter(c => c !== '카드대금').sort((a, b) => a.localeCompare(b, 'ko')); }
-function subsOf(cat) { return [...new Set(state.tx.filter(t => t.kind === 'expense' && catOf(t) === cat && subOf(t)).map(subOf))].sort((a, b) => a.localeCompare(b, 'ko')); }
+function allCats() { const base = catKeys().filter(c => c !== '카드대금'); const extra = [...new Set(state.tx.filter(t => t.kind === 'expense').map(catOf))].filter(c => c && c !== '카드대금' && !base.includes(c)).sort((a, b) => a.localeCompare(b, 'ko')); return [...base, ...extra]; }
+function subsOf(cat) { const tree = catTreeOf()[cat] || [], used = [...new Set(state.tx.filter(t => t.kind === 'expense' && catOf(t) === cat && subOf(t)).map(subOf))].filter(s => !tree.includes(s)).sort((a, b) => a.localeCompare(b, 'ko')); return [...new Set([...tree, ...used])].filter(s => s && s !== defSub(cat)); }
+function subOptsHtml(cat, sel) { const list = subsOf(cat), d = defSub(cat); return `<option value="" ${!sel || sel === d ? 'selected' : ''}>${esc(d)}</option>` + list.map(s => `<option value="${esc(s)}" ${s === sel ? 'selected' : ''}>${esc(s)}</option>`).join('') + (sel && sel !== d && !list.includes(sel) ? `<option value="${esc(sel)}" selected>${esc(sel)}</option>` : '') + '<option value="__new">직접 입력…</option>'; }
 
 // ---------- card billing cycle ----------
 const PAY_FIRST_YM = '2026-07';   // 결제 목록 시작월 (이전에 저장된 결제일 기록이 더 늦게 시작해도 여기서부터)
@@ -155,7 +166,7 @@ function formHtml(p, t) {
       <label class="f">사용처</label><input id="${p}place" list="${p}places" value="${esc(t.place)}" autocomplete="off" placeholder="예: 스타벅스">
       <datalist id="${p}places">${[...new Set(state.tx.map(x => x.place).filter(Boolean))].slice(0, 300).map(x => `<option value="${esc(x)}">`).join('')}</datalist>
       <div class="row2"><div><label class="f">대분류</label><select id="${p}cat"><option value="" ${cat ? '' : 'selected'}>선택</option>${cats.map(c => `<option ${c === cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-        <div><label class="f">소분류</label><input id="${p}sub" list="${p}subs" value="${esc(sub)}" autocomplete="off" placeholder="선택/직접"><datalist id="${p}subs">${subsOf(cat).map(s => `<option value="${esc(s)}">`).join('')}</datalist></div></div>
+        <div><label class="f">소분류</label><select id="${p}sub">${subOptsHtml(cat, sub)}</select><input id="${p}subNew" placeholder="새 소분류 이름" autocomplete="off" hidden style="margin-top:6px"></div></div>
       <label class="f">구분</label><select id="${p}tag"><option value="" ${!t.tag ? 'selected' : ''}>기본 (분류 규칙대로)</option><option ${t.tag === '고정' ? 'selected' : ''}>고정</option><option ${t.tag === '비정기' ? 'selected' : ''}>비정기</option>${t.tag && !['고정', '비정기'].includes(t.tag) ? `<option selected>${esc(t.tag)}</option>` : ''}</select>
     </div>
     <div id="${p}incWrap" ${inc ? '' : 'hidden'}><label class="f">수입 종류</label><select id="${p}incCat">${INCOME_CATS.map(c => `<option ${c === incCat ? 'selected' : ''}>${c}</option>`).join('')}</select>
@@ -170,8 +181,8 @@ function readForm(p) {
   if (!amount) throw new Error('금액을 입력하세요');
   if (!date) throw new Error('날짜를 입력하세요');
   if (kind === 'income') return { tx_date: date, kind, amount, pay: 'cash', place: g('incPlace'), memo: g('memo'), cls: '수입>' + g('incCat'), tag: '' };
-  const cat = g('cat'), sub = g('sub');
-  return { tx_date: date, kind, amount, pay: segVal(root, 'pay'), place: g('place'), memo: g('memo'), cls: cat ? cat + (sub ? '>' + sub : '') : '', tag: g('tag') };
+  const cat = g('cat'), sv = g('sub'), sub = sv === '__new' ? g('subNew') : sv;
+  return { tx_date: date, kind, amount, pay: segVal(root, 'pay'), place: g('place'), memo: g('memo'), cls: cat ? withSub(cat + (sub ? '>' + sub : '')) : '', tag: g('tag') };
 }
 function wireForm(p) {
   const root = document.querySelector(`[data-form="${p}"]`), q = id => root.querySelector('#' + p + id);
@@ -181,12 +192,13 @@ function wireForm(p) {
     if (seg.dataset.grp === 'kind') { const inc = b.dataset.val === 'income'; q('payWrap').hidden = inc; q('expWrap').hidden = inc; q('incWrap').hidden = !inc; }
   }));
   q('amount').addEventListener('input', e => { const d = e.target.value.replace(/\D/g, ''); e.target.value = d ? Number(d).toLocaleString('ko-KR') : ''; });
-  q('cat').addEventListener('change', () => { q('subs').innerHTML = subsOf(q('cat').value).map(s => `<option value="${esc(s)}">`).join(''); q('sub').value = ''; });
+  q('cat').addEventListener('change', () => { q('sub').innerHTML = subOptsHtml(q('cat').value, ''); q('subNew').hidden = true; q('subNew').value = ''; });
+  q('sub').addEventListener('change', () => { q('subNew').hidden = q('sub').value !== '__new'; if (!q('subNew').hidden) q('subNew').focus(); });
   q('place').addEventListener('change', () => { // 같은 사용처를 전에 입력했다면 분류·결제수단 자동 채움
     const v = q('place').value.trim(); if (!v) return;
     const prev = state.tx.find(t => t.kind === 'expense' && t.place === v); if (!prev) return;
     const cat = catOf(prev); if ([...q('cat').options].some(o => o.value === cat)) q('cat').value = cat;
-    q('subs').innerHTML = subsOf(q('cat').value).map(s => `<option value="${esc(s)}">`).join(''); q('sub').value = subOf(prev); q('tag').value = ['고정', '비정기'].includes(prev.tag) ? prev.tag : '';
+    q('sub').innerHTML = subOptsHtml(q('cat').value, subOf(prev)); q('subNew').hidden = true; q('tag').value = ['고정', '비정기'].includes(prev.tag) ? prev.tag : '';
     const pb = [...root.querySelectorAll('[data-grp="pay"] button')]; pb.forEach(b => b.classList.toggle('on', b.dataset.val === prev.pay));
   });
 }
@@ -265,7 +277,7 @@ function renderHistoryBody() {
   const cmpDate = (a, b) => a.tx_date < b.tx_date ? 1 : a.tx_date > b.tx_date ? -1 : ((a.created_at || '') < (b.created_at || '') ? 1 : (a.created_at || '') > (b.created_at || '') ? -1 : 0);
   const kindOk = t => !F.kind || (F.kind === 'expense' ? isSpend(t) : F.kind === 'income' ? t.kind === 'income' : t.kind === 'expense' && !isSpend(t));
   const list = state.tx.filter(t => kindOk(t) && (!F.month || t._m === F.month) && (!F.cats.length || F.cats.includes(hCatKey(t)))
-    && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : q === '일반' ? isSpend(t) && catOf(t) !== '미분류' && !subOf(t) : q.endsWith('>일반') ? isSpend(t) && !subOf(t) && catOf(t) === q.slice(0, -3) : (t.place +' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
+    && (!q || (q === '미분류' ? t.kind === 'expense' && catOf(t) === '미분류' : q === '일반' ? isSpend(t) && catOf(t) !== '미분류' && (subOf(t) || '일반') === '일반' : q.endsWith('>일반') ? isSpend(t) && (subOf(t) || '일반') === '일반' && catOf(t) === q.slice(0, -3) : (t.place +' ' + t.memo + ' ' + t.cls).toLowerCase().includes(q))));
   list.sort(state.hSort === 'old' ? (a, b) => -cmpDate(a, b) : state.hSort === 'high' ? (a, b) => (b.amount - a.amount) || cmpDate(a, b) : state.hSort === 'low' ? (a, b) => (a.amount - b.amount) || cmpDate(a, b) : cmpDate);
   const exp = list.filter(isSpend).reduce((s, t) => s + t.amount, 0), inc = list.filter(t => t.kind === 'income').reduce((s, t) => s + t.amount, 0);
   const dayTot = {}; if (!flat) list.forEach(t => { if (isSpend(t)) dayTot[t.tx_date] = (dayTot[t.tx_date] || 0) + t.amount; });
@@ -643,6 +655,12 @@ function viewSettings() {
       <button class="btn sec" data-act="delPayDay" ${pDays.length > 1 ? '' : 'disabled'}>마지막 변경 지우기</button>
       <div class="note">결제일을 바꾸면 그 결제월부터 선택지와 청구 기간이 바뀌어요. 청구 기간은 하나카드 결제일 표 기준.</div></div>
 
+    <div class="card"><h2>분류 관리 <small>지출 소분류 · 입력할 때 드롭박스에 나와요</small></h2>
+      ${catKeys().filter(c => c !== '카드대금').map((c, i) => `<details data-ct="${esc(c)}" ${state.ctOpen === c ? 'open' : ''} style="margin:6px 0"><summary style="cursor:pointer;padding:6px 0">${esc(c)} <small>${subsOf(c).length + 1}개</small></summary>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0"><span class="hchip" style="opacity:.6">${esc(defSub(c))} (기본)</span>${subsOf(c).map(s => `<span class="hchip">${esc(s)} <button type="button" class="btn sec sm" data-act="delSub" data-c="${esc(c)}" data-s="${esc(s)}" style="margin:0 0 0 4px;padding:0 6px">×</button></span>`).join('')}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px"><input id="ctNew-${i}" placeholder="새 소분류" autocomplete="off" style="flex:1 1 140px;min-width:0"><button type="button" class="btn sec sm" data-act="addSub" data-c="${esc(c)}" data-i="${i}" style="margin:0">추가</button></div></details>`).join('')}
+      <div class="note">삭제하면 그 소분류를 쓰던 내역은 '일반'(용돈/기타는 '기타')으로 바뀌어요. 대분류를 바꾸려면 따로 요청하세요.</div></div>
+
     <div class="card"><h2>분류 규칙 <small>대분류(또는 '대분류>소분류') → 성격</small></h2>
       <table>${rules.map(([k, n]) => `<tr><td>${esc(k)}</td><td><select data-rule="${esc(k)}" style="width:auto;padding:4px 8px;font-size:14px">${NATURES.map(x => `<option ${x === n ? 'selected' : ''}>${x}</option>`).join('')}</select></td><td>${state.rules[k] !== DEFAULT_RULES[k] || !(k in DEFAULT_RULES) ? `<button class="btn sec sm" data-act="delRule" data-key="${esc(k)}">삭제</button>` : ''}</td></tr>`).join('')}</table>
       <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px"><select id="rCat" style="flex:1 1 140px;min-width:0"><option value="">대분류 선택</option>${[...new Set(['미분류', '카드대금', ...allCats(), ...Object.keys(state.rules).filter(k => !k.includes('>')).map(normCls)])].sort((a, b) => a.localeCompare(b, 'ko')).map(c => `<option>${esc(c)}</option>`).join('')}</select>
@@ -665,6 +683,7 @@ function viewSettings() {
     $('#rSubs').innerHTML = cat ? [...new Set([...subsOf(cat), ...Object.keys(state.rules).filter(k => k.startsWith(cat + '>')).map(k => k.slice(cat.length + 1))])].filter(Boolean).map(s => `<option value="${esc(s)}">`).join('') : '';
   };
   $('#fImport').onchange = e => e.target.files[0] && doImport(e.target.files[0]);
+  view().querySelectorAll('details[data-ct]').forEach(d => d.ontoggle = () => { if (d.open) state.ctOpen = d.dataset.ct; });
   view().querySelectorAll('[data-rule]').forEach(s => s.onchange = async () => { await run(async () => { await backend.setRules([{ key: s.dataset.rule, nature: s.value }]); state.rules[s.dataset.rule] = s.value; prep(); toast('규칙 변경됨'); }); });
 }
 
@@ -879,7 +898,7 @@ function closeModal() { const m = $('#modal'); m.hidden = true; m.innerHTML = ''
 const handlers = {
   save: () => run(async () => {
     const row = { ...readForm('f_'), source: 'app', import_key: null };
-    const saved = await backend.addTx(row); state.tx.push(saved); prep(); toast('저장됨');
+    const saved = await backend.addTx(row); state.tx.push(saved); await rememberSub(row); prep(); toast('저장됨');
     const keepDate = row.tx_date; viewInput(); const d = $('#f_date'); if (d) d.value = keepDate;
   }),
   edit: el => {
@@ -890,7 +909,7 @@ const handlers = {
   },
   update: el => run(async () => {
     const row = readForm('m_'), i = state.tx.findIndex(x => x.id === el.dataset.id);
-    state.tx[i] = await backend.updateTx(el.dataset.id, row); prep(); closeModal(); toast('수정됨'); render();
+    state.tx[i] = await backend.updateTx(el.dataset.id, row); await rememberSub(row); prep(); closeModal(); toast('수정됨'); render();
   }),
   remove: el => run(async () => {
     if (!confirm('이 내역을 삭제할까요?')) return;
@@ -922,6 +941,20 @@ const handlers = {
   delCatLimit: el => run(async () => {
     const catLimits = catLimitsOf().filter(e => e.key !== el.dataset.key), merged = { ...state.settings, catLimits };
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; toast('한도 삭제됨'); render();
+  }),
+  addSub: el => run(async () => {
+    const c = el.dataset.c, name = $('#ctNew-' + el.dataset.i).value.trim();
+    if (!name || name.includes('>') || name === defSub(c) || subsOf(c).includes(name)) { toast('이미 있거나 쓸 수 없는 이름이에요'); return; }
+    const tree = { ...catTreeOf(), [c]: [...(catTreeOf()[c] || []), name] }, merged = { ...state.settings, catTree: tree };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged }; state.ctOpen = c; toast('소분류 추가됨'); render();
+  }),
+  delSub: el => run(async () => {
+    const c = el.dataset.c, s = el.dataset.s, rows = state.tx.filter(t => t.kind === 'expense' && catOf(t) === c && subOf(t) === s);
+    if (rows.length && !confirm(`${c} › ${s} 내역 ${rows.length}건이 '${defSub(c)}'(으)로 바뀌어요. 삭제할까요?`)) return;
+    for (const r of rows) { const u = await backend.updateTx(r.id, { cls: c + '>' + defSub(c) }); const i = state.tx.findIndex(x => x.id === r.id); if (i >= 0) state.tx[i] = u; }
+    const tree = { ...catTreeOf(), [c]: (catTreeOf()[c] || []).filter(x => x !== s) }, merged = { ...state.settings, catTree: tree };
+    await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged };
+    prep(); state.ctOpen = c; toast(rows.length ? `삭제됨 · ${rows.length}건 변경` : '삭제됨'); render();
   }),
   mdToggle: el => { const o = state.mdOpen ??= {}; o[el.dataset.v] = !o[el.dataset.v]; viewAnalysis(); },
   mdAll: el => { const o = state.mdOpen ??= {}, cats = [...$('#mDetail').querySelectorAll('[data-act="mdToggle"]')].map(b => b.dataset.v), all = cats.every(c => o[c]); cats.forEach(c => o[c] = !all); viewAnalysis(); },
@@ -1401,7 +1434,7 @@ async function loadImportFiles(files) {
 const impNewRules = () => (state.imp.rules || []).filter(r => !(r.key in state.rules));
 handlers.openImport = () => { state.imp = { files: [], mode: 'split', incCardPay: false, cands: [], ed: {}, rules: [], asset: null }; openModal(''); renderImport(); };
 handlers.impGo = () => run(async () => {
-  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, _unc0, _onnuriFace, ...r }) => r);
+  const rows = state.imp.cands.filter(x => x._on && x.amount > 0).map(({ _dup, _on, _cardPay, _needAmt, _topup, _kdup, _unc0, _onnuriFace, ...r }) => ({ ...r, cls: r.kind === 'expense' ? withSub(r.cls) : r.cls }));
   const bankFiles = state.imp.files.filter(f => f.type === 'bank'), recs = payRecordsFromBank(bankFiles), nRec = Object.keys(recs).length, dBals = bankDailyBals(bankFiles);
   const cdo = (state.imp.cancelDel || []).filter(x => x.on);
   if (!rows.length && !state.imp.asset && !nRec && !dBals.length && !cdo.length) return;
