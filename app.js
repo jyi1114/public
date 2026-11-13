@@ -373,7 +373,7 @@ function viewAnalysis() {
   let h = '';
 
   // --- 현금 점검 (다음 카드 결제 vs 통장 잔액) ---
-  const od = Number(S.overdraftLimit) || 0, pl = payments(today), di = nextPayIdx(pl, today), opts = pl.slice(0, di + 1);
+  const od = Number(S.overdraftLimit) || 0, pl = payments(today), di = nextPayIdx(pl, today), opts = pl.filter((p, i) => i <= di || p.start <= today);   // 다음 결제까지 + 사용 기간이 이미 시작된 그 다음 결제
   const pc = opts.find(p => p.ym === state.pSel) || opts[di], ci = pl.indexOf(pc), prev = pl[ci - 1], isDef = ci === di, past = pc.pay <= today && !isDef, upc = !past;
   const dday = Math.max(0, Math.ceil(dnum(pc.pay) - dnum(today))), mdOf = iso => `${+iso.slice(5, 7)}.${+iso.slice(8, 10)}`, dd = x => x.replace(/-/g, '.');
   const cashCalc = p => {   // 결제 p의 청구 예정액·통장 잔액 계산
@@ -392,7 +392,7 @@ function viewAnalysis() {
   const { bill0, inProg, ptotal, el, est, bill, bal, hasAuto } = cashCalc(pc), lbl = inProg ? ' (예상)' : '';
   const has21 = upc && pc.pay.slice(8, 10) === '21', [ty, tm] = today.split('-').map(Number);
   const mid21 = upc && !has21 && [0, 1, 2].some(k => { const d = isoOf(Date.UTC(ty, tm - 1 + k, 21) / 86400000); return today < d && d < pc.pay; });
-  let cashRows = '<div class="note">이 결제 기간의 통장 잔액을 기록하세요.</div>';
+  let cashRows = `<table><tr><td>청구 예정액${lbl}</td><td><b>${won(bill)}</b></td></tr></table><div class="note">이 결제 기간의 통장 잔액을 기록하면 판정이 나와요.</div>`;
   if (bal) {
     const avail = bal.v + od, after = bal.v - bill, ago = Math.round(dnum(today) - dnum(bal.date)), pre = past ? '당시 ' : '';
     const verdict = after >= 0 ? tag(pre + '적절' + lbl, 'ok') : after >= -od ? tag(pre + '위험' + lbl, 'warn') : tag(pre + '파산' + lbl, 'bad');
