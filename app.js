@@ -655,8 +655,8 @@ function viewSettings() {
       <button class="btn sec" data-act="delPayDay" ${pDays.length > 1 ? '' : 'disabled'}>마지막 변경 지우기</button>
       <div class="note">결제일을 바꾸면 그 결제월부터 선택지와 청구 기간이 바뀌어요. 청구 기간은 하나카드 결제일 표 기준.</div></div>
 
-    <div class="card"><h2>분류 관리 <small>지출 소분류 · 입력할 때 드롭박스에 나와요</small></h2>
-      ${catKeys().filter(c => c !== '카드대금').map((c, i) => `<details data-ct="${esc(c)}" ${state.ctOpen === c ? 'open' : ''} style="margin:6px 0"><summary style="cursor:pointer;padding:6px 0">${esc(c)} <small>${subsOf(c).length + 1}개</small></summary>
+    <div class="card"><h2><span>분류 관리 <small>지출 소분류 · 입력할 때 드롭박스에 나와요</small></span><button type="button" data-act="ctAll" style="font:inherit;font-size:11px;font-weight:400;padding:2px 8px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--sub);cursor:pointer">${state.ctAll ? '모두 닫기' : '모두 열기'}</button></h2>
+      ${catKeys().filter(c => c !== '카드대금').map((c, i) => `<details data-ct="${esc(c)}" ${state.ctAll || state.ctOpen === c ? 'open' : ''} style="margin:6px 0"><summary style="cursor:pointer;padding:6px 0">${esc(c)} <small>${subsOf(c).length + 1}개</small></summary>
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0"><span class="hchip" style="opacity:.6">${esc(defSub(c))} (기본)</span>${subsOf(c).map(s => `<span class="hchip">${esc(s)} <button type="button" class="btn sec sm" data-act="delSub" data-c="${esc(c)}" data-s="${esc(s)}" style="margin:0 0 0 4px;padding:0 6px">×</button></span>`).join('')}</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px"><input id="ctNew-${i}" placeholder="새 소분류" autocomplete="off" style="flex:1 1 140px;min-width:0"><button type="button" class="btn sec sm" data-act="addSub" data-c="${esc(c)}" data-i="${i}" style="margin:0">추가</button></div></details>`).join('')}
       <div class="note">삭제하면 그 소분류를 쓰던 내역은 '일반'(용돈/기타는 '기타')으로 바뀌어요. 대분류를 바꾸려면 따로 요청하세요.</div></div>
@@ -956,6 +956,7 @@ const handlers = {
     await backend.saveSettings(merged); state.settings = { ...DEFAULT_SETTINGS, ...merged };
     prep(); state.ctOpen = c; toast(rows.length ? `삭제됨 · ${rows.length}건 변경` : '삭제됨'); render();
   }),
+  ctAll: () => { state.ctAll = !state.ctAll; state.ctOpen = null; viewSettings(); },   // 설정 '분류 관리' 모두 열기/닫기
   mdToggle: el => { const o = state.mdOpen ??= {}; o[el.dataset.v] = !o[el.dataset.v]; viewAnalysis(); },
   mdAll: el => { const o = state.mdOpen ??= {}, cats = [...$('#mDetail').querySelectorAll('[data-act="mdToggle"]')].map(b => b.dataset.v), all = cats.every(c => o[c]); cats.forEach(c => o[c] = !all); viewAnalysis(); },
   catSel: el => { const v = el.dataset.v; state.catSel = v.includes('>') && state.catSel === v ? v.split('>')[0] : v; state.mdOpen = { [v.split('>')[0]]: true }; viewAnalysis(); },   // 선택된 소분류 칩을 다시 누르면 해제(부모 대분류로). 월 상세는 그 대분류의 소분류만 펼침(차트 막대와 같음), 화면 이동 없음
